@@ -30,11 +30,17 @@ function amountInWords(amount) {
   return convert(num) + ' Rupees Only';
 }
 
-function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
+function buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank = null) {
   // Build narration from voucher data
   const narration = voucher.narration ||
-    `Being payment for Invoice No. ${voucher.invoice_no || ''}` +
-    (voucher.payment_reference ? ` vide Ref: ${voucher.payment_reference}` : '');
+    (voucher.payment_reference ? `Being payment vide Ref: ${voucher.payment_reference}` : 'Being payment as per details above');
+
+  // Use tally vch no if available, otherwise fall back to generated
+  const displayVoucherNo = voucher.tally_vch_no || voucherNo || '';
+  // Company bank details (from master)
+  const bankName    = companyBank?.bank_name     || '';
+  const accountNo   = companyBank?.account_number || '';
+  const accountName = companyBank?.account_name   || '';
 
   const approvalTrail = [
     `Prepared by: ${voucher.created_by_name || 'Admin'}`,
@@ -225,7 +231,13 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
 <!-- HEADER -->
 <div class="header">
   <div class="logo-circle">
-    <span class="logo-check">✓</span>
+    <span class="logo-check"><svg xmlns="http://www.w3.org/2000/svg" width="246.413" height="55.428" viewBox="0 0 246.413 55.428">
+  <g transform="translate(-21.93 -19.07)">
+    <path d="M159.067,32.83c-.1.832-.146,1.472-.244,1.955a4.246,4.246,0,0,0-.1.884,6.542,6.542,0,0,0,.931,3.526,64.994,64.994,0,0,0,5.294,6.469,87.938,87.938,0,0,1,6.906,8.721,15.958,15.958,0,0,1,2.548,9.262,16.755,16.755,0,0,1-1.227,6.371,16.039,16.039,0,0,1-3.64,5.487,14.166,14.166,0,0,1-5.877,3.427,26.653,26.653,0,0,1-7.645,1.077H142.95V68.693h11.514a8.664,8.664,0,0,0,4.634-1.238,4.41,4.41,0,0,0,1.862-3.869,6.537,6.537,0,0,0-.733-2.944,16.507,16.507,0,0,0-1.961-2.99l-5.814-6.839a51.964,51.964,0,0,1-5.315-7.109,12.965,12.965,0,0,1-1.862-6.714,14.411,14.411,0,0,1,.2-2.4q.224-1.248.3-1.763h13.277Zm71.581,0L211.2,80.794,196.4,46.008l8.087-13.818,6.709,19.5,6.074-18.862h13.376Zm-44.34,0H172.3l20.527,47.965,7.692-13.033Zm69.818,0H242.213l12.736,35.884H242.827l3.354-13.22L239.519,38.54,226.58,79.988h44.33Zm17.391,0H293.9a33.9,33.9,0,0,1,7.057.686,12.481,12.481,0,0,1,5.44,2.736,11.482,11.482,0,0,1,3.334,5.2,23.2,23.2,0,0,1,.931,6.958v31.6H297.625V49.045c0-1.862-.343-3.12-1.123-3.822a5.805,5.805,0,0,0-3.921-1.077h-6.126V80.03H273.51Z" transform="translate(-58.083 -6.297)" fill="#0d4689"/>
+    <path d="M70.706,40.158A60.969,60.969,0,0,1,50.018,60.4c-6.8,4.894-17.443,7.6-21.036,3.947s-4-8.7-.556-14.593c3-5.149,3.7-5.2,6.9-11.592,1.04-6.7-7.7-1.2-8.394,2.148l-4.2,2.247c1.753-12.793,12.045-22.882,24.385-22.882,11.192,0,22.035,9.444,23.585,20.49M21.93,46.456c0,14.094,10.245,27.386,25.186,27.386,13.891,0,25.233-12.294,25.233-27.386S61.012,19.07,47.116,19.07,21.93,31.364,21.93,46.456M65.053,34.464A64.18,64.18,0,0,1,48.931,46.425c-2.08.9-6.9,4.1-7.848,1.248-.452-3.349,2-4.649,3.349-5.4a6.675,6.675,0,0,0-5.6,2.351c-6.048,5.045-6.995,16.59,3.5,9.881,8.446-4.894,17.937-12.939,22.737-20.038" transform="translate(0 0)" fill="#0d4689"/>
+    <path d="M476.77,42.079V36.966h-1.95V36.28h4.587v.686h-1.893v5.107Zm3.443,0v-5.8h1.144l1.357,4.129c.114.343.229.629.286.863a7.33,7.33,0,0,1,.286-.978l1.378-4.015h1.04v5.8h-.749V37.258l-1.664,4.816H482.6l-1.659-4.935v4.935Z" transform="translate(-217.362 -8.26)" fill="#0d4689"/>
+  </g>
+</svg></span>
   </div>
   <div class="company-block">
     <div class="company-name">SWAN SOLUTIONS &amp; SERVICES PVT. LTD.</div>
@@ -239,13 +251,14 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
 <!-- TITLE -->
 <div class="voucher-title-bar">Payment Voucher</div>
 
-<!-- ROW 1: Voucher No + Date -->
+<!-- ROW 1: Voucher No + Date (date intentionally blank) -->
 <div class="field-row">
   <span class="field-label">Voucher No.</span>
-  <span class="field-line value">${voucherNo || ''}</span>
+  <span class="field-line value">${displayVoucherNo}</span>
   <span class="spacer"></span>
   <span class="field-label">Date :</span>
-  <span class="field-line value" style="max-width:120px;">${fmtDate(voucher.invoice_date) || fmtDate(new Date())}</span>
+  <span class="field-line value" style="max-width:90px;">${fmtDate(voucher.bill_date)}</span>
+  <span class="field-line value" style="max-width:120px;"></span>
 </div>
 
 <!-- ROW 2: Pay + Amount -->
@@ -269,10 +282,10 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
 <!-- ROW 4: Bill No + Dated + Narration -->
 <div class="field-row" style="margin-top:2px;">
   <span class="field-label">Bill No.</span>
-  <span class="field-line value" style="max-width:160px;">${voucher.invoice_no || ''}</span>
+  <span class="field-line value" style="max-width:140px;">${voucher.bill_ref_no || ''}</span>
   <span class="spacer"></span>
   <span class="field-label">Dated</span>
-  <span class="field-line value" style="max-width:100px;">${fmtDate(voucher.invoice_date)}</span>
+  <span class="field-line value" style="max-width:90px;">${fmtDate(voucher.bill_date)}</span>
   <span class="spacer"></span>
   <span class="field-label">Narration</span>
   <span class="field-line value">${narration}</span>
@@ -297,10 +310,10 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
   <span class="field-line value" style="max-width:130px;">${voucher.payment_reference || ''}</span>
   <span class="spacer"></span>
   <span class="field-label">Bank</span>
-  <span class="field-line value"></span>
+  <span class="field-line value">${bankName}${accountName ? ' — ' + accountName : ''}</span>
   <span class="spacer"></span>
   <span class="field-label">A/c No.</span>
-  <span class="field-line value" style="max-width:110px;"></span>
+  <span class="field-line value" style="max-width:130px;">${accountNo}</span>
 </div>
 
 <!-- SIGN ROW -->
@@ -330,21 +343,19 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo) {
 }
 
 // ── Generate PDF buffer (for direct download)
-async function generateVoucherPDF(voucher, lineItems, comments) {
-  const voucherNo = `PV/${new Date().getFullYear()}/${String(voucher.id).slice(0, 6).toUpperCase()}`;
-  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo);
+async function generateVoucherPDF(voucher, lineItems, comments, companyBank = null) {
+  const voucherNo = voucher.voucher_no
+  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank);
   return await renderPDF(html);
 }
 
 // ── Generate PDF and SAVE to disk, return file path
-async function generateAndSaveVoucherPDF(voucher, lineItems, comments) {
-  const year = new Date().getFullYear();
-  const shortId = String(voucher.id).slice(0, 6).toUpperCase();
-  const voucherNo = `PV/${year}/${shortId}`;
-  const fileName = `voucher_${voucher.id}.pdf`;
+async function generateAndSaveVoucherPDF(voucher, lineItems, comments, companyBank = null) {
+  const voucherNo = voucher.voucher_no
+  const fileName = `voucher_${voucherNo}.pdf`;
   const savePath = path.join(__dirname, '../../vouchers', fileName);
 
-  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo);
+  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank);
   const pdfBuffer = await renderPDF(html);
 
   fs.writeFileSync(savePath, pdfBuffer);

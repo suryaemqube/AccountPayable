@@ -1,19 +1,25 @@
 export function StatusBadge({ status }) {
   const map = {
-    draft: 'Draft',
-    assigned: 'Assigned',
+    draft:            'Draft',
+    assigned:         'Assigned',
     pending_approval: 'Pending Approval',
-    approved: 'Approved',
-    rejected: 'Rejected',
-    downloaded: 'Downloaded',
+    verification:     'Verification',
+    ready_for_bank:  'Ready For Bank',
+    proceed:         'Proceed',
+    approved:         'Approved',
+    rejected:         'Rejected',
+    downloaded:       'Downloaded',
   };
   const cls = {
-    draft: 'badge-draft',
-    assigned: 'badge-assigned',
+    draft:            'badge-draft',
+    assigned:         'badge-assigned',
     pending_approval: 'badge-pending',
-    approved: 'badge-approved',
-    rejected: 'badge-rejected',
-    downloaded: 'badge-downloaded',
+    verification:     'badge-pending',
+    ready_for_bank:  'badge-export',
+    proceed:         'badge-proceed',
+    approved:         'badge-approved',
+    rejected:         'badge-rejected',
+    downloaded:       'badge-downloaded',
   };
   return <span className={`badge ${cls[status] || 'badge-draft'}`}>{map[status] || status}</span>;
 }

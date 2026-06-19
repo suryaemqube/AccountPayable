@@ -13,11 +13,16 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowed = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'application/pdf'];
+  const allowed = [
+    'image/jpeg', 'image/png', 'image/jpg', 'image/webp',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ];
   if (allowed.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Only images (JPEG, PNG, WEBP) and PDFs are allowed'), false);
+    cb(new Error('Only images, PDFs, and Word docs are allowed'), false);
   }
 };
 
@@ -27,4 +32,26 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
+// Memory-storage uploader for Excel files (buffer needed by xlsx parser)
+const xlFilter = (req, file, cb) => {
+  const allowed = [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'application/octet-stream',
+  ];
+  const extOk = /\.(xlsx|xls)$/i.test(file.originalname);
+  if (allowed.includes(file.mimetype) || extOk) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only Excel files (.xlsx, .xls) are allowed'), false);
+  }
+};
+
+const uploadXl = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: xlFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
 module.exports = upload;
+module.exports.uploadXl = uploadXl;

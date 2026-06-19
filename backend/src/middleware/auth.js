@@ -10,7 +10,11 @@ async function auth(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const result = await pool.query(
-      'SELECT id, name, email, role, is_active FROM users WHERE id = $1',
+      `SELECT u.id, u.name, u.email, u.mobile_no, u.is_active,
+              pd.code AS role
+       FROM   users u
+       LEFT JOIN parameter_details pd ON pd.parameterdetid = u.role_det_id
+       WHERE  u.id = $1`,
       [decoded.userId]
     );
     if (!result.rows.length || !result.rows[0].is_active) {

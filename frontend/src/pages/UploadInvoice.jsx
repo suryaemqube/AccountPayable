@@ -26,9 +26,7 @@ export default function UploadInvoice() {
     const formData = new FormData();
     formData.append('invoice', file);
     try {
-      const r = await api.post('/vouchers/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      const r = await api.post('/vouchers/upload', formData);
       toast.success('Invoice scanned! Voucher created.');
       nav(`/admin/vouchers/${r.data.voucher.id}`);
     } catch (err) {

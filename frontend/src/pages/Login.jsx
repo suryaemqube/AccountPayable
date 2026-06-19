@@ -27,7 +27,7 @@ export default function Login() {
       <div style={{ width: 380 }}>
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div style={{ fontFamily: 'Georgia, serif', fontSize: 26, fontWeight: 700, letterSpacing: '-0.5px', marginBottom: 4 }}>
-            PayFlow AP
+            PayPro
           </div>
           <div style={{ color: 'var(--text3)', fontSize: 13 }}>Accounts Payable Management</div>
         </div>

@@ -6,13 +6,19 @@ import { fmtDate } from '../components/Helpers';
 
 export default function ManageManagers() {
   const [managers, setManagers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]   = useState(true);
+  const [roles, setRoles]       = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ name: '', email: '', password: '' });
-  const [saving, setSaving] = useState(false);
+  const [editId, setEditId]     = useState(null);
+  const [form, setForm]         = useState({ name: '', email: '', password: '', role: 'manager', mobile_no: '' });
+  const [saving, setSaving]     = useState(false);
 
-  useEffect(() => { fetchManagers(); }, []);
+  useEffect(() => {
+    fetchManagers();
+    api.get('/parameters/3')
+      .then(r => setRoles(r.data.details.filter(d => d.code !== 'admin')))
+      .catch(() => {});
+  }, []);
 
   async function fetchManagers() {
     try {
@@ -34,7 +40,7 @@ export default function ManageManagers() {
         await api.post('/managers', form);
         toast.success('Manager created');
       }
-      setShowForm(false); setEditId(null); setForm({ name: '', email: '', password: '' });
+      setShowForm(false); setEditId(null); setForm({ name: '', email: '', password: '', role: 'manager', mobile_no: '' });
       fetchManagers();
     } catch (err) { toast.error(err.response?.data?.error || 'Save failed'); }
     finally { setSaving(false); }
@@ -49,7 +55,7 @@ export default function ManageManagers() {
   }
 
   function openEdit(m) {
-    setEditId(m.id); setForm({ name: m.name, email: m.email, password: '' });
+    setEditId(m.id); setForm({ name: m.name, email: m.email, password: '', role: m.role, mobile_no: m.mobile_no || '' });
     setShowForm(true);
   }
 
@@ -58,10 +64,10 @@ export default function ManageManagers() {
       <div style={{ padding: 28, maxWidth: 800 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 2 }}>Managers</h1>
+            <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 2 }}>Users</h1>
             <div style={{ color: 'var(--text3)', fontSize: 13 }}>{managers.filter(m => m.is_active).length} active</div>
           </div>
-          <button className="btn btn-primary" onClick={() => { setShowForm(true); setEditId(null); setForm({ name: '', email: '', password: '' }); }}>
+          <button className="btn btn-primary" onClick={() => { setShowForm(true); setEditId(null); setForm({ name: '', email: '', password: '', role: 'manager', mobile_no: '' }); }}>
             + Add Manager
           </button>
         </div>
@@ -81,10 +87,29 @@ export default function ManageManagers() {
                   <label>{editId ? 'New Password (leave blank to keep)' : 'Password *'}</label>
                   <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
                 </div>
+                <div className="form-group">
+                  <label>Role *</label>
+                  <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
+                    {roles.length === 0 ? (
+                      <>
+                        <option value="manager">Manager</option>
+                        <option value="executive">Executive</option>
+                      </>
+                    ) : roles.map(r => (
+                      <option key={r.parameterdetid} value={r.code || r.parametervalues}>{r.parametervalues}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Mobile No.</label>
+                  <input value={form.mobile_no} onChange={e => setForm(f => ({ ...f, mobile_no: e.target.value }))} placeholder="9876543210" />
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : (editId ? 'Update' : 'Create')}</button>
-                <button className="btn" onClick={() => { setShowForm(false); setEditId(null); }}>Cancel</button>
+                <button className="btn" onClick={() => { setShowForm(false); setEditId(null); setForm({ name: '', email: '', password: '', role: 'manager', mobile_no: '' }); }}>Cancel</button>
               </div>
             </div>
           </div>
@@ -99,13 +124,18 @@ export default function ManageManagers() {
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr><th>Name</th><th>Email</th><th>Status</th><th>Added</th><th></th></tr>
+                  <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Added</th><th></th></tr>
                 </thead>
                 <tbody>
                   {managers.map(m => (
                     <tr key={m.id}>
                       <td style={{ fontWeight: 500 }}>{m.name}</td>
                       <td style={{ color: 'var(--text3)' }}>{m.email}</td>
+                      <td>
+                        <span className={`badge ${m.role === 'executive' ? 'badge-pending' : 'badge-info'}`} style={{ textTransform: 'capitalize' }}>
+                          {m.role}
+                        </span>
+                      </td>
                       <td>
                         <span className={`badge ${m.is_active ? 'badge-approved' : 'badge-rejected'}`}>
                           {m.is_active ? 'Active' : 'Inactive'}
