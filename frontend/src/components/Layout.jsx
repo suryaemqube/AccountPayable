@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 
 const adminLinks = [
   { to: '/admin', label: 'Dashboard', icon: '⬛' },
+  { to: '/admin/bills', label: 'Bills', icon: '📄' },
   { to: '/admin/vouchers', label: 'Vouchers', icon: '🧾' },
   { to: '/admin/suppliers', label: 'Suppliers', icon: '🏢' },
   { to: '/admin/managers', label: 'Users', icon: '👥' },
@@ -16,16 +17,16 @@ const managerLinks = [
 ];
 
 const executiveLinks = [
-  { to: '/executive/vouchers',        label: 'Vouchers',           icon: '🧾' },
-  { to: '/executive/supplier-master', label: 'Suppliers',          icon: '🏢' },
-  { to: '/executive/suppliers',       label: 'Supplier Approvals', icon: '✅' },
-  { to: '/executive/master-upload',   label: 'Master Upload',      icon: '📊' },
+  { to: '/executive/bills',           label: 'Bills',         icon: '📄' },
+  { to: '/executive/vouchers',        label: 'Vouchers',      icon: '🧾' },
+  { to: '/executive/supplier-master', label: 'Suppliers',     icon: '🏢' },
+  { to: '/executive/master-upload',   label: 'Master Upload', icon: '📊' },
 ];
 
 const approverLinks = [
-  { to: '/approver/vouchers',          label: 'Vouchers',           icon: '📋' },
-  { to: '/approver/supplier-master',   label: 'Suppliers',          icon: '🏢' },
-  { to: '/approver/suppliers',         label: 'Supplier Approvals', icon: '✅' },
+  { to: '/approver/bills',           label: 'Bills',     icon: '📄' },
+  { to: '/approver/vouchers',        label: 'Vouchers',  icon: '📋' },
+  { to: '/approver/supplier-master', label: 'Suppliers', icon: '🏢' },
 ];
 
 export default function Layout({ children }) {

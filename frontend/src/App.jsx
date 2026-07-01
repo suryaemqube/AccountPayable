@@ -13,6 +13,8 @@ import SupplierApprovals from './pages/SupplierApprovals';
 import ChangePassword from './pages/ChangePassword';
 import CompanyDetails from './pages/CompanyDetails';
 import MasterUpload from './pages/MasterUpload';
+import BillList from './pages/BillList';
+import BillDetail from './pages/BillDetail';
 import PaymentStatus from './pages/PaymentStatus';
 import ParameterMaster from './pages/ParameterMaster';
 import './index.css';
@@ -57,6 +59,8 @@ export default function App() {
           <Route path="/admin/master-upload" element={<RequireAuth roles={['admin']}><MasterUpload /></RequireAuth>} />
           <Route path="/admin/company" element={<RequireAuth roles={['admin']}><CompanyDetails /></RequireAuth>} />
           <Route path="/admin/parameters" element={<RequireAuth roles={['admin']}><ParameterMaster /></RequireAuth>} />
+          <Route path="/admin/bills"     element={<RequireAuth roles={['admin']}><BillList /></RequireAuth>} />
+          <Route path="/admin/bills/:id" element={<RequireAuth roles={['admin']}><BillDetail /></RequireAuth>} />
           <Route path="/admin/payment-status" element={<RequireAuth roles={['admin']}><PaymentStatus /></RequireAuth>} />
           <Route path="/admin/change-password" element={<RequireAuth roles={['admin']}><ChangePassword /></RequireAuth>} />
 
@@ -69,14 +73,16 @@ export default function App() {
           <Route path="/executive" element={<RequireAuth roles={['executive']}><VoucherList /></RequireAuth>} />
           <Route path="/executive/vouchers" element={<RequireAuth roles={['executive']}><VoucherList /></RequireAuth>} />
           <Route path="/executive/vouchers/:id" element={<RequireAuth roles={['executive']}><VoucherDetail /></RequireAuth>} />
-          <Route path="/executive/suppliers" element={<RequireAuth roles={['executive']}><SupplierApprovals /></RequireAuth>} />
           <Route path="/executive/supplier-master" element={<RequireAuth roles={['executive']}><SupplierMaster /></RequireAuth>} />
+          <Route path="/executive/bills"     element={<RequireAuth roles={['executive']}><BillList /></RequireAuth>} />
+          <Route path="/executive/bills/:id" element={<RequireAuth roles={['executive']}><BillDetail /></RequireAuth>} />
           <Route path="/executive/master-upload" element={<RequireAuth roles={['executive']}><MasterUpload /></RequireAuth>} />
           <Route path="/executive/change-password" element={<RequireAuth roles={['executive']}><ChangePassword /></RequireAuth>} />
 
           {/* Approver routes */}
           <Route path="/approver/supplier-master" element={<RequireAuth roles={['approver']}><SupplierMaster /></RequireAuth>} />
-          <Route path="/approver/suppliers" element={<RequireAuth roles={['approver']}><SupplierApprovals /></RequireAuth>} />
+          <Route path="/approver/bills"     element={<RequireAuth roles={['approver']}><BillList /></RequireAuth>} />
+          <Route path="/approver/bills/:id" element={<RequireAuth roles={['approver']}><BillDetail /></RequireAuth>} />
           <Route path="/approver/vouchers" element={<RequireAuth roles={['approver']}><VoucherList /></RequireAuth>} />
           <Route path="/approver/vouchers/:id" element={<RequireAuth roles={['approver']}><VoucherDetail /></RequireAuth>} />
           <Route path="/approver/change-password" element={<RequireAuth roles={['approver']}><ChangePassword /></RequireAuth>} />

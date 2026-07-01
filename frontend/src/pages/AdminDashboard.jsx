@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
 import { StatusBadge, PaymentBadge, fmt, fmtDate } from '../components/Helpers';
+import { VS } from '../constants/voucherStatus';
 
 export default function AdminDashboard() {
   const [vouchers, setVouchers] = useState([]);
@@ -37,11 +38,13 @@ export default function AdminDashboard() {
   ];
 
   const statusFlow = [
-    { key: 'draft',           label: 'Draft',           count: counts.draft           || 0 },
-    { key: 'assigned',        label: 'Assigned',        count: counts.assigned        || 0 },
-    { key: 'ready_for_bank', label: 'Ready for Bank', count: counts.ready_for_bank || 0 },
-    { key: 'proceed',        label: 'Proceed',        count: counts.proceed        || 0 },
-    { key: 'approved',        label: 'Approved',        count: counts.approved        || 0 },
+    { key: VS.DRAFT,          label: 'Draft',           count: counts[VS.DRAFT]          || 0 },
+    { key: VS.ASSIGNED,       label: 'Assigned',        count: counts[VS.ASSIGNED]       || 0 },
+    { key: VS.APPROVED,       label: 'Approved',        count: counts[VS.APPROVED]       || 0 },
+    { key: VS.REVIEWED,       label: 'Reviewed',        count: counts[VS.REVIEWED]       || 0 },
+    { key: VS.EXPORTED,       label: 'Exported',        count: counts[VS.EXPORTED]       || 0 },
+    { key: VS.READY_TO_REMIT, label: 'Ready to Remit',  count: counts[VS.READY_TO_REMIT] || 0 },
+    { key: VS.PAID,           label: 'Paid',            count: counts[VS.PAID]           || 0 },
   ];
 
   return (

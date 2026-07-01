@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   supplier_name VARCHAR(255) NOT NULL,
   supplier_type VARCHAR(50) CHECK (supplier_type IN ('RESELLER','DISTRIBUTOR','OEM')),
-  gstin VARCHAR(20),
+  gstin VARCHAR(50),
   owned_by UUID REFERENCES users(id),
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS supplier_bank_details (
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
   bank_name VARCHAR(255),
   account_holder_name VARCHAR(255),
-  ifsc_code VARCHAR(20),
+  ifsc_code VARCHAR(50),
   branch_name VARCHAR(255),
   account_number VARCHAR(50),
   is_primary BOOLEAN DEFAULT false,
@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS supplier_contacts (
   name VARCHAR(255),
   designation VARCHAR(100),
   email VARCHAR(255),
-  mobile VARCHAR(20),
-  alternate_contact VARCHAR(20),
+  mobile VARCHAR(50),
+  alternate_contact VARCHAR(50),
   is_primary BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -106,23 +106,32 @@ CREATE TABLE IF NOT EXISTS supplier_documents (
 
 CREATE TABLE IF NOT EXISTS vouchers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  supplier_name VARCHAR(255),
-  supplier_gstin VARCHAR(20),
+  bill_id UUID REFERENCES bills(id) ON DELETE SET NULL,
+  voucher_no VARCHAR(50),
+  amount NUMERIC(14,2) DEFAULT 0,
+  narration TEXT,
+  supplier_bank_id UUID REFERENCES supplier_bank_details(id) ON DELETE SET NULL,
+  due_days INT,
+  utr_no VARCHAR(100),
+  tally_vch_no VARCHAR(100),
+  bill_ref_no VARCHAR(255),
+  bill_date DATE,
+  tds_amount NUMERIC(14,2) DEFAULT 0,
+  -- legacy columns kept for old rows
   invoice_date DATE,
   taxable_amount NUMERIC(14,2) DEFAULT 0,
   cgst NUMERIC(14,2) DEFAULT 0,
   sgst NUMERIC(14,2) DEFAULT 0,
   igst NUMERIC(14,2) DEFAULT 0,
   total_amount NUMERIC(14,2) DEFAULT 0,
-  narration TEXT,
-  payment_status VARCHAR(30) DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid','paid','partial')),
   payment_reference VARCHAR(255),
-  status VARCHAR(30) DEFAULT 'draft' CHECK (status IN ('draft','assigned','pending_approval','ready_for_bank','proceed','approved','rejected','downloaded')),
   voucher_pdf_path VARCHAR(255),
-  voucher_no VARCHAR(50),
   assigned_to UUID REFERENCES users(id),
   created_by UUID REFERENCES users(id),
   rejected_reason TEXT,
+  status_det_id INT REFERENCES parameter_details(parameterdetid),
+  payment_status_det_id INT REFERENCES parameter_details(parameterdetid),
+  supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -149,6 +158,17 @@ CREATE TABLE IF NOT EXISTS voucher_activity_log (
 CREATE TABLE IF NOT EXISTS voucher_attachments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   voucher_id UUID NOT NULL REFERENCES vouchers(id) ON DELETE CASCADE,
+  file_path VARCHAR(500) NOT NULL,
+  original_name VARCHAR(255),
+  mime_type VARCHAR(100),
+  file_size INT,
+  uploaded_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bill_attachments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bill_id UUID NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
   file_path VARCHAR(500) NOT NULL,
   original_name VARCHAR(255),
   mime_type VARCHAR(100),
@@ -185,10 +205,46 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE SEQUENCE IF NOT EXISTS bill_no_seq START 1;
+
+CREATE TABLE IF NOT EXISTS bills (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bill_no VARCHAR(50),
+  supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL,
+  invoice_date DATE,
+  bill_ref_no VARCHAR(255),
+  bill_date DATE,
+  taxable_amount NUMERIC(14,2) DEFAULT 0,
+  cgst NUMERIC(14,2) DEFAULT 0,
+  sgst NUMERIC(14,2) DEFAULT 0,
+  igst NUMERIC(14,2) DEFAULT 0,
+  tds_amount NUMERIC(14,2) DEFAULT 0,
+  total_amount NUMERIC(14,2) DEFAULT 0,
+  narration TEXT,
+  payment_reference VARCHAR(255),
+  tally_vch_no VARCHAR(100),
+  due_days INT,
+  purchase_type_det_id INT REFERENCES parameter_details(parameterdetid),
+  company_bank_id UUID REFERENCES company_bank_accounts(id),
+  bill_status VARCHAR(30) DEFAULT 'open' CHECK (bill_status IN ('open','partially_paid','fully_paid')),
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ── All migrations in one idempotent block ───────────────────────────────
 DO $$ BEGIN
 
   -- ── 1. Legacy column additions ───────────────────────────────────────
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='bill_id') THEN
+    ALTER TABLE vouchers ADD COLUMN bill_id UUID REFERENCES bills(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='amount') THEN
+    ALTER TABLE vouchers ADD COLUMN amount NUMERIC(14,2) DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='supplier_bank_id') THEN
+    ALTER TABLE vouchers ADD COLUMN supplier_bank_id UUID REFERENCES supplier_bank_details(id) ON DELETE SET NULL;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='tally_vch_no') THEN
     ALTER TABLE vouchers ADD COLUMN tally_vch_no VARCHAR(100);
   END IF;
@@ -217,7 +273,18 @@ DO $$ BEGIN
     ALTER TABLE vouchers ADD COLUMN utr_no VARCHAR(100);
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='supplier_id') THEN
-    ALTER TABLE vouchers ADD COLUMN supplier_id UUID REFERENCES suppliers(id);
+    ALTER TABLE vouchers ADD COLUMN supplier_id UUID REFERENCES suppliers(id) ON DELETE SET NULL;
+  END IF;
+  -- Fix existing constraint to allow supplier deletion (SET NULL instead of RESTRICT)
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.table_name = 'vouchers' AND tc.constraint_type = 'FOREIGN KEY'
+      AND ccu.column_name = 'supplier_id'
+  ) THEN
+    ALTER TABLE vouchers DROP CONSTRAINT IF EXISTS vouchers_supplier_id_fkey;
+    ALTER TABLE vouchers ADD CONSTRAINT vouchers_supplier_id_fkey
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='due_days') THEN
     ALTER TABLE vouchers ADD COLUMN due_days INT;
@@ -309,6 +376,13 @@ DO $$ BEGIN
     ALTER TABLE suppliers ADD COLUMN created_by UUID REFERENCES users(id);
   END IF;
 
+  -- Widen VARCHAR(20) columns that are too narrow for real-world data
+  ALTER TABLE supplier_contacts     ALTER COLUMN mobile            TYPE VARCHAR(50);
+  ALTER TABLE supplier_contacts     ALTER COLUMN alternate_contact TYPE VARCHAR(50);
+  ALTER TABLE supplier_bank_details ALTER COLUMN swift_code        TYPE VARCHAR(50);
+  ALTER TABLE supplier_bank_details ALTER COLUMN ifsc_code         TYPE VARCHAR(50);
+  ALTER TABLE suppliers             ALTER COLUMN gstin             TYPE VARCHAR(50);
+
   -- Supplier approval workflow
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='suppliers' AND column_name='approval_status') THEN
     ALTER TABLE suppliers ADD COLUMN approval_status VARCHAR(20) DEFAULT 'pending' CHECK (approval_status IN ('pending','approved','rejected'));
@@ -364,11 +438,22 @@ DO $$ BEGIN
   END IF;
 
   -- ── 4. Seed parameter master data (inline, idempotent) ───────────────
-  -- Ensure unique constraint exists on parameter_details (needed for ON CONFLICT)
+  -- Ensure unique constraints exist on parameter_details
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'parameter_details_parameterid_code_key'
   ) THEN
     ALTER TABLE parameter_details ADD CONSTRAINT parameter_details_parameterid_code_key UNIQUE (parameterid, code);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'parameter_details_parameterid_parameterno_key'
+  ) THEN
+    -- Remove duplicate (parameterid, parameterno) rows before adding unique constraint,
+    -- keeping the row with the highest parameterdetid (most recently inserted).
+    DELETE FROM parameter_details
+    WHERE parameterdetid NOT IN (
+      SELECT MAX(parameterdetid) FROM parameter_details GROUP BY parameterid, parameterno
+    );
+    ALTER TABLE parameter_details ADD CONSTRAINT parameter_details_parameterid_parameterno_key UNIQUE (parameterid, parameterno);
   END IF;
 
   INSERT INTO parameters (parameterid, parametertext) VALUES
@@ -381,26 +466,30 @@ DO $$ BEGIN
   UPDATE parameters SET parametertext='Products & Services' WHERE parameterid=5 AND parametertext != 'Products & Services';
   UPDATE parameters SET parametertext='Regions Served'      WHERE parameterid=6 AND parametertext != 'Regions Served';
 
+  -- Remove any stale voucher status rows whose codes no longer exist in the current seed.
+  -- These orphan rows cause unique-code constraint violations during the upsert below.
+  DELETE FROM parameter_details
+  WHERE parameterid = 1
+    AND code NOT IN ('draft','assigned','approved','reviewed','exported','ready_to_remit','rejected','paid');
+
   -- Sync sequences after manual id inserts
   PERFORM setval('parameters_parameterid_seq', (SELECT MAX(parameterid) FROM parameters));
-
-  -- Wipe and re-seed params 5 & 6 (simple 2-option dropdowns, not admin-managed)
-  DELETE FROM parameter_details WHERE parameterid IN (4, 5, 6);
 
   INSERT INTO parameter_details (parameterid, parameterno, parametervalues, code, displayorder) VALUES
     -- Voucher Status (1)
     (1,1,'Draft',           'draft',           1),
     (1,2,'Assigned',        'assigned',         2),
-    (1,3,'Verification',    'verification',     3),
-    (1,4,'Ready For Bank', 'ready_for_bank',  4),
-    (1,5,'Proceed',        'proceed',         5),
-    (1,6,'Approved',        'approved',         6),
+    (1,3,'Approved',        'approved',         3),
+    (1,4,'Reviewed',        'reviewed',         4),
+    (1,5,'Exported',        'exported',         5),
+    (1,6,'Ready to Remit',  'ready_to_remit',   6),
     (1,7,'Rejected',        'rejected',         7),
-    (1,8,'Downloaded',      'downloaded',       8),
+    (1,8,'Paid',            'paid',             8),
     -- Payment Status (2)
-    (2,1,'Unpaid',  'unpaid',   1),
-    (2,2,'Paid',    'paid',     2),
-    (2,3,'Partial', 'partial',  3),
+    (2,1,'Pending Verification', 'pending_verification', 1),
+    (2,2,'Unpaid',  'unpaid',   2),
+    (2,3,'Paid',    'paid',     3),
+    (2,4,'Partial', 'partial',  4),
     -- User Role (3)
     (3,1,'Admin',     'admin',     1),
     (3,2,'Manager',   'manager',   2),
@@ -458,7 +547,10 @@ DO $$ BEGIN
     (8,34,'Ladakh',                                  'IN_LA', 34),
     (8,35,'Lakshadweep',                             'IN_LD', 35),
     (8,36,'Puducherry',                              'IN_PY', 36)
-  ON CONFLICT (parameterid, code) DO NOTHING;
+  ON CONFLICT (parameterid, parameterno) DO UPDATE
+    SET parametervalues = EXCLUDED.parametervalues,
+        code            = EXCLUDED.code,
+        displayorder    = EXCLUDED.displayorder;
 
   -- ── 5. Backfill det_id columns from existing string values (guarded) ───
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='status') THEN
@@ -519,6 +611,70 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='source_voucher_id') THEN
     ALTER TABLE vouchers ADD COLUMN source_voucher_id UUID REFERENCES vouchers(id) ON DELETE SET NULL;
   END IF;
+
+  -- ── Bills + Vouchers split migration ─────────────────────────────────
+  -- Add new columns if not present
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='bill_id') THEN
+    ALTER TABLE vouchers ADD COLUMN bill_id UUID REFERENCES bills(id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='amount') THEN
+    ALTER TABLE vouchers ADD COLUMN amount NUMERIC(14,2) DEFAULT 0;
+  END IF;
+  -- Drop invoice-specific columns that moved to the bills table
+  -- (safe: all voucher data was deleted before running this)
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='invoice_date') THEN
+    ALTER TABLE vouchers DROP COLUMN invoice_date;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='taxable_amount') THEN
+    ALTER TABLE vouchers DROP COLUMN taxable_amount;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='cgst') THEN
+    ALTER TABLE vouchers DROP COLUMN cgst;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='sgst') THEN
+    ALTER TABLE vouchers DROP COLUMN sgst;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='igst') THEN
+    ALTER TABLE vouchers DROP COLUMN igst;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='tds_amount') THEN
+    ALTER TABLE vouchers DROP COLUMN tds_amount;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='total_amount') THEN
+    ALTER TABLE vouchers DROP COLUMN total_amount;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='bill_ref_no') THEN
+    ALTER TABLE vouchers DROP COLUMN bill_ref_no;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='bill_date') THEN
+    ALTER TABLE vouchers DROP COLUMN bill_date;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='tally_vch_no') THEN
+    ALTER TABLE vouchers DROP COLUMN tally_vch_no;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='payment_reference') THEN
+    ALTER TABLE vouchers DROP COLUMN payment_reference;
+  END IF;
+  -- due_days stays on vouchers (payment terms per voucher); re-add if previously dropped
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='due_days') THEN
+    ALTER TABLE vouchers ADD COLUMN due_days INT;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='purchase_type_det_id') THEN
+    ALTER TABLE vouchers DROP COLUMN purchase_type_det_id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='company_bank_id') THEN
+    ALTER TABLE vouchers DROP COLUMN company_bank_id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='balance_amount') THEN
+    ALTER TABLE vouchers DROP COLUMN balance_amount;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='source_voucher_id') THEN
+    ALTER TABLE vouchers DROP COLUMN source_voucher_id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='vouchers' AND column_name='supplier_id') THEN
+    ALTER TABLE vouchers DROP COLUMN supplier_id;
+  END IF;
+
 
 END $$;
 `;

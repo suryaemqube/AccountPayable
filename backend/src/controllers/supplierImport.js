@@ -12,6 +12,11 @@ function normCode(val, allowedCodes) {
   return allowedCodes.find(c => c === u) || null;
 }
 
+function toTitleCase(s) {
+  if (!s) return s;
+  return str(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function normBool(val) {
   const s = str(val).toLowerCase();
   return s === 'yes' || s === 'true' || s === '1' || s === 'y';
@@ -54,19 +59,19 @@ function parseBuffer(buffer) {
         // Registered address
         reg_address:          c(12),
         reg_city:             c(13),
-        reg_state:            c(14),
+        reg_state:            toTitleCase(c(14)),
         reg_country:          c(15),
         reg_pincode:          c(16),
         // Billing address
         bill_address:         c(17),
         bill_city:            c(18),
-        bill_state:           c(19),
+        bill_state:           toTitleCase(c(19)),
         bill_country:         c(20),
         bill_pincode:         c(21),
         // Shipping address
         ship_address:         c(22),
         ship_city:            c(23),
-        ship_state:           c(24),
+        ship_state:           toTitleCase(c(24)),
         ship_country:         c(25),
         ship_pincode:         c(26),
         // Bank
@@ -291,7 +296,7 @@ async function confirmSupplierImport(req, res) {
            VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT (supplier_id, address_type) DO UPDATE
              SET address_line=$3, city=$4, state=$5, country=$6, pincode=$7`,
-          [suppId, a.type, a.line||null, a.city||null, a.state||null, a.country||null, a.pincode||null]
+          [suppId, a.type, a.line||null, a.city||null, a.state||null, a.country||'India', a.pincode||null]
         );
       }
 

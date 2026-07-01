@@ -169,9 +169,9 @@ async function updateSupplier(req, res) {
          territory            = COALESCE($16, territory),
          owned_by             = COALESCE($17, owned_by),
          is_active            = COALESCE($18, is_active),
-         approval_status      = 'pending',
-         approved_by          = NULL,
-         last_approved_at     = NULL,
+         approval_status      = CASE WHEN $21 THEN approval_status ELSE 'pending' END,
+         approved_by          = CASE WHEN $21 THEN approved_by    ELSE NULL      END,
+         last_approved_at     = CASE WHEN $21 THEN last_approved_at ELSE NULL    END,
          approval_notes       = COALESCE($19, approval_notes),
          updated_at           = NOW()
        WHERE id = $20`,
@@ -181,6 +181,7 @@ async function updateSupplier(req, res) {
         pf_registration, esic_registration, tds_applicable,
         gst_certificate, lower_deduction_cert, msme_declaration,
         products_services, territory, owned_by, is_active, approval_notes || null, id,
+        req.user.role === 'admin',  // $21: skip approval reset for admin
       ]
     );
 
@@ -239,10 +240,14 @@ async function updateSupplier(req, res) {
 async function deleteSupplier(req, res) {
   const { id } = req.params;
   try {
-    await pool.query('UPDATE suppliers SET is_active=false, updated_at=NOW() WHERE id=$1', [id]);
-    res.json({ message: 'Supplier deactivated' });
+    const r = await pool.query('DELETE FROM suppliers WHERE id=$1 RETURNING supplier_name', [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Supplier not found' });
+    res.json({ message: 'Supplier deleted' });
   } catch (err) {
     console.error(err);
+    if (err.code === '23503') {
+      return res.status(400).json({ error: 'Cannot delete: supplier is linked to existing vouchers' });
+    }
     res.status(500).json({ error: 'Server error' });
   }
 }

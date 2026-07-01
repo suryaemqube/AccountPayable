@@ -83,7 +83,7 @@ function TallyImport() {
   async function handleImport() {
     if (!vouchers.length) return toast.error('No vouchers to import');
     const missing = vouchers.filter(v => !v.supplier_id);
-    if (missing.length) return toast.error('Some rows have unmatched suppliers — please select them first');
+    if (missing.length) return toast.error('Some rows have unmatched suppliers — please remove them first');
     setImporting(true);
     try {
       const r = await api.post('/import/xl-confirm', { vouchers });
@@ -107,7 +107,7 @@ function TallyImport() {
             const fd = new FormData();
             files.forEach(f => fd.append('files', f));
             try {
-              await api.post(`/vouchers/${voucher.id}/attachments`, fd);
+              await api.post(`/bills/${voucher.id}/attachments`, fd);
               setUploadProgress(p => ({ ...p, [voucher.id]: 'done' }));
             } catch (attachErr) {
               setUploadProgress(p => ({ ...p, [voucher.id]: 'error' }));
@@ -120,10 +120,10 @@ function TallyImport() {
       if (uploadTasks.length) await Promise.allSettled(uploadTasks);
 
       const msg = r.data.skipped_count > 0
-        ? `${r.data.count} created, ${r.data.skipped_count} duplicate(s) skipped`
-        : `${r.data.count} voucher(s) created successfully!`;
+        ? `${r.data.count} bill(s) created, ${r.data.skipped_count} duplicate(s) skipped`
+        : `${r.data.count} bill(s) created successfully!`;
       toast.success(msg);
-      nav(user?.role === 'executive' ? '/executive' : '/admin/vouchers');
+      nav(user?.role === 'executive' ? '/executive/bills' : '/admin/bills');
     } catch (err) {
       toast.error(err.response?.data?.error || 'Import failed');
     } finally { setImporting(false); }
@@ -132,6 +132,8 @@ function TallyImport() {
   const inPreview   = vouchers.length > 0;
   const unmatched   = vouchers.filter(v => !v.matched).length;
   const duplicates  = vouchers.filter(v => v.duplicate).length;
+  const suppMap     = Object.fromEntries(suppliers.map(s => [s.id, s]));
+  const unapproved  = vouchers.filter(v => v.supplier_id && !v.duplicate && suppMap[v.supplier_id]?.approval_status !== 'approved').length;
 
   return (
     <div style={{ width: inPreview ? '100%' : '45%' }}>
@@ -267,14 +269,26 @@ function TallyImport() {
                       <td style={{ minWidth: 200 }}>
                         {v.matched ? (
                           <div>
-                            <div style={{ fontWeight: 500, fontSize: 13 }}>{v.supplier_name}</div>
+                            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <span style={{ fontWeight: 500, fontSize: 13 }}>{v.supplier_name}</span>
+                              {(() => {
+                                const s = suppliers.find(x => x.id === v.supplier_id);
+                                if (s?.approval_status === 'approved')
+                                  return <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, background:'#dcfce7', color:'#166534', fontWeight:600 }}>Approved</span>;
+                                if (s?.approval_status === 'waiting_for_approval' || s?.approval_status === 'pending')
+                                  return <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, background:'#fef9c3', color:'#92400e', fontWeight:600 }}>Approval Pending</span>;
+                                if (s?.approval_status === 'rejected')
+                                  return <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, background:'#fdecea', color:'#9b1c1c', fontWeight:600 }}>Rejected</span>;
+                                return <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, background:'#f3f4f6', color:'#6b7280', fontWeight:600 }}>{s?.approval_status || 'Unknown'}</span>;
+                              })()}
+                            </div>
                             {v.supplier_name !== v.party_name && (
                               <div style={{ fontSize: 11, color: 'var(--text3)' }}>from: {v.party_name}</div>
                             )}
                           </div>
                         ) : (
                           <div>
-                            <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 3 }}>⚠ {v.party_name}</div>
+                            <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 3 }}>⚠ {v.party_name} - <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, background:'#fef9c3', color:'#92400e', fontWeight:600 }}>No Match</span></div>
                             <select value={v.supplier_id || ''} onChange={e => setSupplierForRow(i, e.target.value)}
                               style={{ fontSize: 12, width: '100%' }}>
                               <option value="">— Select supplier —</option>
@@ -375,11 +389,16 @@ function TallyImport() {
             </div>
           </div>
 
+          {unapproved > 0 && (
+            <div style={{ background: '#fff3cd', border: '1px solid #ffc107', borderRadius: 8, padding: '10px 14px', marginBottom: 10, fontSize: 13, color: '#856404' }}>
+              ⚠ {unapproved} row(s) have suppliers with pending approval — bills cannot be created for these. Please get the supplier(s) approved first or remove those rows.
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 10 }}>
-            <button className="btn btn-primary" onClick={handleImport} disabled={importing || !vouchers.length}>
+            <button className="btn btn-primary" onClick={handleImport} disabled={importing || !vouchers.length || unapproved > 0}>
               {importing
                 ? 'Importing…'
-                : `✅ Import ${vouchers.length} Voucher(s)${Object.values(pendingAttachments).flat().length ? ` + ${Object.values(pendingAttachments).flat().length} file(s)` : ''}`}
+                : `✅ Import ${vouchers.length} bill(s)${Object.values(pendingAttachments).flat().length ? ` + ${Object.values(pendingAttachments).flat().length} file(s)` : ''}`}
             </button>
             <button className="btn" onClick={reset}>Cancel</button>
           </div>

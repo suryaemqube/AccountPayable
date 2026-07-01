@@ -3,11 +3,15 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
 import { StatusBadge, PaymentBadge, fmt, fmtDate } from '../components/Helpers';
+import { VS } from '../constants/voucherStatus';
+import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
 const inp = { border:'1px solid var(--border)', borderRadius:6, padding:'7px 10px', fontSize:13, background:'var(--bg)', color:'var(--text)', outline:'none', fontFamily:'inherit' };
 
 export default function VoucherList() {
+  const { user } = useAuth();
+  const canDelete = ['admin', 'approver'].includes(user?.role);
   const [vouchers, setVouchers]     = useState([]);
   const [loading, setLoading]       = useState(true);
   const [filter, setFilter]         = useState('all');
@@ -101,30 +105,27 @@ export default function VoucherList() {
     return null;
   }
 
-  const byStatus = filter === 'has_balance'
-    ? vouchers.filter(v => Number(v.balance_amount) > 0)
-    : filter === 'all' ? vouchers : vouchers.filter(v => v.status === filter);
+  const byStatus = filter === 'all' ? vouchers : vouchers.filter(v => v.status === filter);
 
   const filtered = byStatus.filter(v => {
     if (search) {
       const q = search.toLowerCase();
       const hit = (v.voucher_no||'').toLowerCase().includes(q)
-        || (v.tally_vch_no||'').toLowerCase().includes(q)
+        || (v.bill_no||'').toLowerCase().includes(q)
         || (v.supplier_name||'').toLowerCase().includes(q)
         || (v.bill_ref_no||'').toLowerCase().includes(q);
       if (!hit) return false;
     }
     if (filterSupplier && v.supplier_name !== filterSupplier) return false;
     if (filterPayment  && v.payment_status !== filterPayment)  return false;
-    if (filterDateFrom && v.invoice_date && v.invoice_date < filterDateFrom) return false;
-    if (filterDateTo   && v.invoice_date && v.invoice_date > filterDateTo)   return false;
+    if (filterDateFrom && v.bill_invoice_date && v.bill_invoice_date < filterDateFrom) return false;
+    if (filterDateTo   && v.bill_invoice_date && v.bill_invoice_date > filterDateTo)   return false;
     return true;
   });
 
   const counts         = vouchers.reduce((a, v) => { a[v.status] = (a[v.status] || 0) + 1; return a; }, {});
-  const balanceCount   = vouchers.filter(v => Number(v.balance_amount) > 0).length;
-  const isExportFilter = filter === 'ready_for_bank';
-  const exportable     = filtered.filter(v => v.status === 'ready_for_bank');
+  const isExportFilter = filter === VS.REVIEWED;
+  const exportable     = filtered.filter(v => v.status === VS.REVIEWED);
 
   const uniqueSuppliers = [...new Set(vouchers.map(v => v.supplier_name).filter(Boolean))].sort();
   const hasFilters = search || filterSupplier || filterPayment || filterDateFrom || filterDateTo;
@@ -151,24 +152,24 @@ export default function VoucherList() {
                 {exporting ? 'Exporting…' : `⬇ Export All (${exportable.length})`}
               </button>
             )}
-            <button className="btn btn-primary" onClick={() => nav(`${basePath}/new`)}>
+            {/* <button className="btn btn-primary" onClick={() => nav(`${basePath}/new`)}>
               + Add Voucher
-            </button>
+            </button> */}
           </div>
         </div>
 
         {/* ── Status filter cards ── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 10, marginBottom: 24 }}>
           {[
-            { key: 'all',              label: 'All',              count: vouchers.length },
-            { key: 'draft',            label: 'Draft',            count: counts.draft            || 0 },
-            { key: 'assigned',         label: 'Assigned',         count: counts.assigned         || 0 },
-            { key: 'verification',     label: 'Verification',     count: counts.verification     || 0 },
-            { key: 'ready_for_bank',  label: 'Ready For Bank',  count: counts.ready_for_bank  || 0 },
-            { key: 'proceed',         label: 'Proceed',         count: counts.proceed         || 0 },
-            { key: 'approved',         label: 'Approved',         count: counts.approved         || 0 },
-            { key: 'rejected',         label: 'Rejected',         count: counts.rejected         || 0 },
-            { key: 'has_balance',      label: 'Has Balance',      count: balanceCount,           accent: true },
+            { key: 'all',                label: 'All',            count: vouchers.length },
+            { key: VS.DRAFT,             label: 'Draft',          count: counts[VS.DRAFT]          || 0 },
+            { key: VS.ASSIGNED,          label: 'Assigned',       count: counts[VS.ASSIGNED]       || 0 },
+            { key: VS.APPROVED,          label: 'Approved',       count: counts[VS.APPROVED]       || 0 },
+            { key: VS.REVIEWED,          label: 'Reviewed',       count: counts[VS.REVIEWED]       || 0 },
+            { key: VS.EXPORTED,          label: 'Exported',       count: counts[VS.EXPORTED]       || 0 },
+            { key: VS.READY_TO_REMIT,    label: 'Ready to Remit', count: counts[VS.READY_TO_REMIT] || 0 },
+            { key: VS.PAID,              label: 'Paid',           count: counts[VS.PAID]           || 0 },
+            { key: VS.REJECTED,          label: 'Rejected',       count: counts[VS.REJECTED]       || 0 },
           ].map(f => (
             <button key={f.key} onClick={() => { setFilter(f.key); setSelected(new Set()); }}
               style={{
@@ -251,14 +252,14 @@ export default function VoucherList() {
                         <input type="checkbox"
                           checked={selected.has(v.id)}
                           onChange={() => toggleSelect(v.id)}
-                          disabled={v.status !== 'ready_for_bank'}
-                          style={{ cursor: v.status === 'ready_for_bank' ? 'pointer' : 'not-allowed', opacity: v.status === 'ready_for_bank' ? 1 : 0.25 }}
+                          disabled={v.status !== VS.REVIEWED}
+                          style={{ cursor: v.status === VS.REVIEWED ? 'pointer' : 'not-allowed', opacity: v.status === VS.REVIEWED ? 1 : 0.25 }}
                         />
                       </td>
                       <td><span className="mono">{v.voucher_no || v.tally_vch_no || '—'}</span></td>
                       <td style={{ fontWeight: 500 }}>{v.supplier_name || '—'}</td>
                       <td>
-                        {fmtDate(v.invoice_date)}
+                        {fmtDate(v.bill_invoice_date)}
                         {(() => {
                           const sev = getDueSeverity(v.due_date);
                           return sev ? (
@@ -270,12 +271,7 @@ export default function VoucherList() {
                         })()}
                       </td>
                       <td>
-                        <span className="mono">{fmt(v.total_amount)}</span>
-                        {Number(v.balance_amount) > 0 && (
-                          <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>
-                            Bal: {fmt(v.balance_amount)}
-                          </div>
-                        )}
+                        <span className="mono">{fmt(v.amount || v.total_amount)}</span>
                       </td>
                       <td><PaymentBadge status={v.payment_status} /></td>
                       <td><StatusBadge status={v.status} /></td>
@@ -285,10 +281,12 @@ export default function VoucherList() {
                           <button className="btn btn-sm" onClick={() => nav(`${basePath}/${v.id}`)}>
                             Edit
                           </button>
-                          <button className="btn btn-sm" style={{ color: 'var(--red)' }}
-                            onClick={e => handleDelete(e, v.id)}>
-                            Delete
-                          </button>
+                          {canDelete && (
+                            <button className="btn btn-sm" style={{ color: 'var(--red)' }}
+                              onClick={e => handleDelete(e, v.id)}>
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

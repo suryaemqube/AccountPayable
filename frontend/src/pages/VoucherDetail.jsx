@@ -2,11 +2,12 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
-import { StatusBadge, PaymentBadge, fmt, fmtDate } from '../components/Helpers';
+import { StatusBadge, PaymentBadge, fmt, fmtDate, fmtDateTime } from '../components/Helpers';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { SalesproStatusCard } from '../components/SalesproStatus';
 import EmailModal from '../components/EmailModal';
+import { VS } from '../constants/voucherStatus';
 
 function FileIcon({ mime }) {
   if (!mime) return '📎';
@@ -34,11 +35,13 @@ export default function VoucherDetail() {
   const [finalRejectReason, setFinalRejectReason] = useState('');
   const [utrInput, setUtrInput]                   = useState('');
   const [savingUtr, setSavingUtr]                 = useState(false);
+  const [showUtrModal, setShowUtrModal]           = useState(false);
   const [saving, setSaving]       = useState(false);
   const [viewer, setViewer]       = useState(null); // { url, mimeType, name }
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [attachments, setAttachments] = useState([]);
+  const [billAttachments, setBillAttachments] = useState([]);
   const fileInputRef = useRef();
 
   const isNew = id === 'new';
@@ -61,6 +64,11 @@ export default function VoucherDetail() {
       setData(r.data);
       setForm(r.data.voucher);
       setAttachments(r.data.attachments || []);
+      if (r.data.voucher.bill_id) {
+        api.get(`/bills/${r.data.voucher.bill_id}/attachments`)
+          .then(br => setBillAttachments(br.data.attachments || []))
+          .catch(() => {});
+      }
       // Auto-select manager from supplier's owned_by
       if (r.data.supplier_info?.owned_by && !r.data.voucher.assigned_to) {
         setAssignTo(r.data.supplier_info.owned_by);
@@ -88,13 +96,7 @@ export default function VoucherDetail() {
   async function handleSave() {
     setSaving(true);
     try {
-      const taxable = parseFloat(form.taxable_amount) || 0;
-      const cgst    = parseFloat(form.cgst)    || 0;
-      const sgst    = parseFloat(form.sgst)    || 0;
-      const igst    = parseFloat(form.igst)    || 0;
-      const tds     = parseFloat(form.tds_amount) || 0;
-      const total   = taxable + cgst + sgst + igst - tds;
-      const payload = { ...form, total_amount: total };
+      const payload = { narration: form.narration, amount: form.amount ? Number(form.amount) : undefined };
 
       if (isNew) {
         const r = await api.post('/vouchers', payload);
@@ -127,7 +129,7 @@ export default function VoucherDetail() {
       await api.post(`/vouchers/${id}/manager-action`, {
         action, comment: action === 'reject' ? rejectReason : comment, rejected_reason: rejectReason,
       });
-      toast.success(action === 'approve' ? 'Sent for Verification' : 'Voucher rejected');
+      toast.success(action === 'approve' ? 'Approved by manager' : 'Voucher rejected');
       fetchVoucher();
       setComment(''); setRejectReason(''); setShowReject(false);
     } catch (err) { toast.error(err.response?.data?.error || 'Action failed'); }
@@ -140,7 +142,7 @@ export default function VoucherDetail() {
         comment,
         rejected_reason: action === 'reject' ? rejectReason : undefined,
       });
-      toast.success(action === 'approve' ? 'Voucher approved. Executive can now enter UTR and generate PDF.' : 'Voucher rejected.');
+      toast.success(action === 'approve' ? 'Voucher ready to remit. Executive can now enter UTR and generate PDF.' : 'Voucher rejected.');
       fetchVoucher();
       setComment('');
       setFinalRejectReason('');
@@ -155,7 +157,7 @@ export default function VoucherDetail() {
         comment,
         rejected_reason: action === 'reject' ? rejectReason : undefined,
       });
-      toast.success(action === 'approve' ? 'Verified — Ready For Bank' : 'Voucher rejected.');
+      toast.success(action === 'approve' ? 'Reviewed — Exported to bank' : 'Voucher rejected.');
       fetchVoucher();
       setComment('');
       setFinalRejectReason('');
@@ -163,14 +165,16 @@ export default function VoucherDetail() {
     } catch (err) { toast.error(err.response?.data?.error || 'Action failed'); }
   }
 
-  async function handleSaveUtr() {
+  async function handleSaveUtr(andSend = false) {
     if (!utrInput.trim()) return toast.error('Enter UTR number');
     setSavingUtr(true);
     try {
       await api.post(`/vouchers/${id}/utr`, { utr_no: utrInput.trim() });
       toast.success('UTR saved');
       setUtrInput('');
-      fetchVoucher();
+      setShowUtrModal(false);
+      await fetchVoucher();
+      if (andSend) setShowEmailModal(true);
     } catch (err) { toast.error(err.response?.data?.error || 'Failed to save UTR'); }
     finally { setSavingUtr(false); }
   }
@@ -220,6 +224,15 @@ export default function VoucherDetail() {
     } catch { toast.error('Delete failed'); }
   }
 
+  async function openBillAttachment(att, billId) {
+    try {
+      const r = await api.get(`/bills/${billId}/attachments/${att.id}`, { responseType: 'blob' });
+      const mimeType = r.headers['content-type'] || att.mime_type || 'application/octet-stream';
+      const url = URL.createObjectURL(new Blob([r.data], { type: mimeType }));
+      setViewer({ url, mimeType, name: att.original_name });
+    } catch { toast.error('Could not open file'); }
+  }
+
   async function openAttachment(att) {
     try {
       const r = await api.get(`/vouchers/${id}/attachments/${att.id}`, { responseType: 'blob' });
@@ -237,34 +250,51 @@ export default function VoucherDetail() {
   const supplierInfo = data.supplier_info;
   const isAdmin        = user.role === 'admin';
   const isExecutive    = user.role === 'executive';
-  const canEdit        = (isAdmin || isExecutive) && ['draft', 'assigned'].includes(voucher.status);
-  const canAssign      = (isAdmin || isExecutive) && ['draft', 'assigned'].includes(voucher.status);
-  const canManagerAct  = user.role === 'manager' && voucher.status === 'assigned';
-  const canApproverVerify  = user.role === 'approver' && voucher.status === 'verification';
-  const canApproverApprove = user.role === 'approver' && voucher.status === 'proceed';
-  const canGenerate        = (isAdmin || isExecutive) && ['approved', 'downloaded'].includes(voucher.status) && !!voucher.utr_no;
-  const canEnterUTR        = (isAdmin || isExecutive) && voucher.status === 'approved' && !voucher.utr_no;
+  const canEdit        = (isAdmin || isExecutive) && [VS.DRAFT, VS.ASSIGNED].includes(voucher.status);
+  const canAssign      = (isAdmin || isExecutive) && [VS.DRAFT, VS.ASSIGNED].includes(voucher.status);
+  const canManagerAct  = user.role === 'manager' && voucher.status === VS.ASSIGNED;
+  const canApproverVerify  = user.role === 'approver' && voucher.status === VS.APPROVED;
+  const canApproverApprove = user.role === 'approver' && voucher.status === VS.EXPORTED;
+  const canGenerate        = (isAdmin || isExecutive) && [VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && !!voucher.utr_no;
+  const canEnterUTR        = (isAdmin || isExecutive) && voucher.status === VS.READY_TO_REMIT && !voucher.utr_no;
 
-  // Financial values (from form when editing, else from voucher)
+  // Financial values: if bill-based voucher, pull from bill; else from form/voucher
+  const hasBill = !!voucher.bill_id;
   const src = editing ? form : voucher;
-  const taxable    = parseFloat(src.taxable_amount) || 0;
-  const cgst       = parseFloat(src.cgst)    || 0;
-  const sgst       = parseFloat(src.sgst)    || 0;
-  const igst       = parseFloat(src.igst)    || 0;
-  const tds        = parseFloat(src.tds_amount) || 0;
-  const balance    = parseFloat(src.balance_amount) || 0;
-  // Sum of all balance (child) vouchers split from this source
-  const balanceSplit = (voucher.balance_vouchers || []).reduce((s, bv) => s + (parseFloat(bv.total_amount) || 0), 0);
-  const grossTotal   = taxable + cgst + sgst + igst;   // before TDS
-  const totalAmount  = parseFloat(src.total_amount) || grossTotal; // stored = gross - tds
-  const netPayable   = grossTotal - tds;               // gross − TDS
-  const amountToPay  = netPayable - balance - balanceSplit;
+  const taxable  = parseFloat(hasBill ? voucher.bill_taxable_amount : src.taxable_amount) || 0;
+  const cgst     = parseFloat(hasBill ? voucher.bill_cgst           : src.cgst)           || 0;
+  const sgst     = parseFloat(hasBill ? voucher.bill_sgst           : src.sgst)           || 0;
+  const igst     = parseFloat(hasBill ? voucher.bill_igst           : src.igst)           || 0;
+  const tds      = parseFloat(hasBill ? voucher.bill_tds_amount     : src.tds_amount)     || 0;
+  const grossTotal  = taxable + cgst + sgst + igst;
+  const netPayable  = grossTotal - tds;
+  // For bill-based vouchers, amount to pay is the voucher's specific amount
+  const amountToPay = hasBill
+    ? (parseFloat(voucher.amount) || 0)
+    : netPayable - balance - balanceSplit;
 
   const gstin = supplierInfo?.gstin || voucher.supplier_gstin || '';
 
   return (
     <Layout><>
       <div style={{ padding: 28, maxWidth: 980 }}>
+
+        {/* ── Bill link banner ── */}
+        {hasBill && voucher.bill_no && (
+          <div style={{ background: '#e8f4fd', borderRadius: 8, padding: '8px 14px', marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: '#555' }}>Bill:</span>
+            <button onClick={() => nav(`/${user?.role === 'admin' ? 'admin' : 'executive'}/bills/${voucher.bill_id}`)}
+              style={{ background: 'none', border: 'none', color: '#0d6efd', cursor: 'pointer', fontWeight: 600, fontSize: 13, padding: 0 }}>
+              {voucher.bill_no}
+            </button>
+            {voucher.bill_ref_no && <span style={{ color: '#888' }}>· Invoice Ref: {voucher.bill_ref_no}</span>}
+            {voucher.bill_status && (
+              <span style={{ marginLeft: 4, background: voucher.bill_status === 'fully_paid' ? '#d1e7dd' : voucher.bill_status === 'partially_paid' ? '#cff4fc' : '#fff3cd', color: voucher.bill_status === 'fully_paid' ? '#0a3622' : voucher.bill_status === 'partially_paid' ? '#055160' : '#856404', borderRadius: 10, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+                {voucher.bill_status === 'fully_paid' ? 'Fully Paid' : voucher.bill_status === 'partially_paid' ? 'Partially Paid' : 'Open'}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* ── Header ── */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 24 }}>
@@ -273,10 +303,9 @@ export default function VoucherDetail() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
               <h1 style={{ fontSize: 20, fontWeight: 600 }}>{isNew ? 'New Voucher' : `Voucher - ${voucher.voucher_no}`}</h1>
               <StatusBadge status={voucher.status} />
-              <PaymentBadge status={voucher.payment_status} />
-              {voucher.tally_vch_no && (
+              {(voucher.tally_vch_no || voucher.bill_no) && (
                 <span style={{ fontSize: 12, color: 'var(--text3)', background: 'var(--surface2)', padding: '2px 8px', borderRadius: 99 }}>
-                  Vch #{voucher.tally_vch_no}
+                  Vch #{voucher.tally_vch_no || voucher.bill_no}
                 </span>
               )}
             </div>
@@ -294,22 +323,10 @@ export default function VoucherDetail() {
               </>
             )}
             {canGenerate && <button className="btn btn-green" onClick={handlePreviewPdf}>📄 {voucher.voucher_pdf_path ? 'Preview PDF' : 'Generate & Preview'}</button>}
-            {(isAdmin || isExecutive) && ['approved', 'downloaded'].includes(voucher.status) && voucher.utr_no && (
+            {(isAdmin || isExecutive) && [VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && voucher.utr_no && (
               <button className="btn" style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe' }}
                 onClick={() => setShowEmailModal(true)}>
                 ✉ Send Payment Advice
-              </button>
-            )}
-            {(isAdmin || isExecutive) && ['approved', 'downloaded'].includes(voucher.status) && Number(voucher.balance_amount) > 0 && (
-              <button className="btn" style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fcd34d' }}
-                onClick={async () => {
-                  try {
-                    const r = await api.post('/vouchers/create-balance', { source_id: voucher.id });
-                    toast.success('Balance voucher created');
-                    nav(`/${user.role}/vouchers/${r.data.voucher.id}`);
-                  } catch (err) { toast.error(err.response?.data?.error || 'Failed'); }
-                }}>
-                + Create Balance Voucher
               </button>
             )}
           </div>
@@ -333,8 +350,30 @@ export default function VoucherDetail() {
                 </div>
               </div>
               <div className="card-body" style={{ paddingTop: 8, paddingBottom: 8 }}>
-                {/* Uploaded attachments */}
-                {attachments.length === 0 && (
+                {/* Bill attachments (read-only) */}
+                {billAttachments.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: 1, padding: '4px 0 6px' }}>From Bill</div>
+                    {billAttachments.map(att => (
+                      <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+                        <span style={{ fontSize: 18 }}><FileIcon mime={att.mime_type} /></span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.original_name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                            {att.uploaded_by_name} · {fmtDate(att.created_at)}
+                            {att.file_size && ` · ${(att.file_size / 1024).toFixed(0)} KB`}
+                          </div>
+                        </div>
+                        <button className="btn btn-sm" onClick={() => openBillAttachment(att, voucher.bill_id)}>View</button>
+                      </div>
+                    ))}
+                    {attachments.length > 0 && (
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: 1, padding: '10px 0 6px' }}>Voucher Files</div>
+                    )}
+                  </>
+                )}
+                {/* Voucher attachments */}
+                {attachments.length === 0 && billAttachments.length === 0 && (
                   <div style={{ padding: '10px 0', color: 'var(--text3)', fontSize: 13 }}>
                     No files attached. Click "Upload Files" to add invoice documents.
                   </div>
@@ -368,53 +407,6 @@ export default function VoucherDetail() {
               <div className="card-body">
                 {editing ? (
                   <>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Supplier</label>
-                        <select value={form.supplier_id || ''} onChange={e => setForm(f => ({ ...f, supplier_id: e.target.value || null }))}>
-                          <option value="">— Select supplier —</option>
-                          {suppliers.map(s => (
-                            <option key={s.id} value={s.id}>{s.supplier_name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="form-group">
-                        <label>Payment Reference</label>
-                        <input value={form.payment_reference || ''} onChange={e => setForm(f => ({ ...f, payment_reference: e.target.value }))}
-                          placeholder="UTR / Cheque No. / App Ref" />
-                      </div>
-                    </div>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Invoice Date</label>
-                        <input type="date" value={form.invoice_date ? form.invoice_date.slice(0, 10) : ''}
-                          onChange={e => setForm(f => ({ ...f, invoice_date: e.target.value }))} />
-                      </div>
-                      <div className="form-group">
-                        <label>Due Days</label>
-                        <input type="number" min="0" placeholder="e.g. 30"
-                          value={form.due_days ?? ''}
-                          onChange={e => setForm(f => ({ ...f, due_days: e.target.value === '' ? null : parseInt(e.target.value) }))} />
-                        {form.due_days && (() => {
-                          const base = voucher.assigned_at ? new Date(voucher.assigned_at) : new Date();
-                          base.setDate(base.getDate() + parseInt(form.due_days));
-                          return <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>
-                            Due: {base.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                            {!voucher.assigned_at && ' (est. from today)'}
-                          </div>;
-                        })()}
-                      </div>
-                    </div>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Payment Status</label>
-                        <select value={form.payment_status || 'unpaid'} onChange={e => setForm(f => ({ ...f, payment_status: e.target.value }))}>
-                          <option value="unpaid">Unpaid</option>
-                          <option value="paid">Paid</option>
-                          <option value="partial">Partial</option>
-                        </select>
-                      </div>
-                    </div>
                     <div className="form-group">
                       <label>Narration</label>
                       <textarea rows={2} value={form.narration || ''} onChange={e => setForm(f => ({ ...f, narration: e.target.value }))} />
@@ -448,15 +440,15 @@ export default function VoucherDetail() {
                   })()}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                     {[
-                      ['Invoice Ref No.',    voucher.payment_reference],
                       ['Supplier',        voucher.supplier_name],
                       ['GSTIN',           gstin],
-                      ['Bill Date',    fmtDate(voucher.invoice_date)],
-                      ['Due Days',        voucher.due_days ? `${voucher.due_days} days` : null],
+                      ['Invoice Date',    fmtDate(voucher.bill_invoice_date)],
+                      ['Invoice Ref No.', voucher.bill_ref_no],
+                      ['Bill No.',        voucher.bill_no],
+                      ['Due Days',        voucher.bill_due_days ? `${voucher.bill_due_days} days` : null],
                       ['Due Date',        voucher.due_date ? fmtDate(voucher.due_date) : null],
                       ['Assigned Date',   voucher.assigned_at ? fmtDate(voucher.assigned_at) : null],
-                      ['Vch No. (Tally)', voucher.tally_vch_no],
-                      ['Ref No.',         voucher.bill_ref_no],
+                      ['Payment Ref.',    voucher.bill_payment_reference],
                     ].map(([l, v]) => v ? (
                       <div key={l}>
                         <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 2 }}>{l}</div>
@@ -480,63 +472,19 @@ export default function VoucherDetail() {
               <div className="card-head"><div className="card-title">Financial Breakdown</div></div>
               {editing ? (
                 <div className="card-body">
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                    <div className="form-group">
-                      <label>Taxable Amount</label>
-                      <input type="number" value={form.taxable_amount || ''} step="0.01"
-                        onChange={e => setForm(f => ({ ...f, taxable_amount: e.target.value }))} />
-                    </div>
-                    <div className="form-group">
-                      <label>CGST</label>
-                      <input type="number" value={form.cgst || ''} step="0.01"
-                        onChange={e => setForm(f => ({ ...f, cgst: e.target.value }))} />
-                    </div>
-                    <div className="form-group">
-                      <label>SGST</label>
-                      <input type="number" value={form.sgst || ''} step="0.01"
-                        onChange={e => setForm(f => ({ ...f, sgst: e.target.value }))} />
-                    </div>
-                    <div className="form-group">
-                      <label>IGST</label>
-                      <input type="number" value={form.igst || ''} step="0.01"
-                        onChange={e => setForm(f => ({ ...f, igst: e.target.value }))} />
-                    </div>
-                    <div className="form-group">
-                      <label>TDS Deducted</label>
-                      <input type="number" value={form.tds_amount || ''} step="0.01"
-                        onChange={e => setForm(f => ({ ...f, tds_amount: e.target.value }))} />
-                    </div>
-                    <div className="form-group">
-                      <label>Balance (Held Back)</label>
-                      <input type="number" value={form.balance_amount || ''} step="0.01" min="0"
-                        placeholder="0.00"
-                        onChange={e => setForm(f => ({ ...f, balance_amount: e.target.value }))} />
-                    </div>
-                  </div>
-                  <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--surface2)', borderRadius: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--text3)', marginBottom: 4 }}>
-                      <span>Net Payable</span>
-                      <span className="mono">{fmt(netPayable)}</span>
-                    </div>
-                    {balance > 0 && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--red)', marginBottom: 4 }}>
-                        <span>Balance (Held Back)</span>
-                        <span className="mono">− {fmt(balance)}</span>
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 15, borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
-                      <span>Amount to Pay</span>
-                      <span className="mono">{fmt(balance > 0 ? amountToPay : netPayable)}</span>
-                    </div>
+                  <div className="form-group">
+                    <label>Payment Amount</label>
+                    <input type="number" step="0.01" value={form.amount || ''}
+                      onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
                   </div>
                 </div>
               ) : (
                 <div style={{ padding: '4px 18px 16px' }}>
-                  {[
-                    taxable > 0  && ['Taxable Amount',  taxable,  false],
-                    cgst > 0     && ['CGST',             cgst,     false],
-                    sgst > 0     && ['SGST',             sgst,     false],
-                    igst > 0     && ['IGST',             igst,     false],
+                  {hasBill && [
+                    taxable > 0 && ['Taxable Amount', taxable],
+                    cgst > 0    && ['CGST',            cgst],
+                    sgst > 0    && ['SGST',            sgst],
+                    igst > 0    && ['IGST',            igst],
                   ].filter(Boolean).map(([label, val]) => (
                     <div key={label} style={{ display: 'flex', justifyContent: 'space-between',
                       padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
@@ -544,37 +492,62 @@ export default function VoucherDetail() {
                       <span className="mono">{fmt(val)}</span>
                     </div>
                   ))}
-                  {/* Total Amount — gross subtotal before deductions */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between',
-                    padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
-                    <span style={{ color: 'var(--text2)' }}>Total Amount</span>
-                    <span className="mono">{fmt(grossTotal)}</span>
-                  </div>
-                  {[
-                    tds > 0          && ['TDS Deducted',        tds],
-                    balance > 0      && ['Balance (Held Back)',  balance],
-                    balanceSplit > 0 && ['Balance Voucher Split', balanceSplit],
-                  ].filter(Boolean).map(([label, val]) => (
-                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between',
-                      padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
-                      <span style={{ color: 'var(--text2)' }}>{label}</span>
-                      <span className="mono" style={{ color: 'var(--red)' }}>− {fmt(val)}</span>
+                  {hasBill && grossTotal > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+                      <span style={{ color: 'var(--text2)' }}>Gross Total</span>
+                      <span className="mono">{fmt(grossTotal)}</span>
                     </div>
-                  ))}
+                  )}
+                  {hasBill && tds > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text2)' }}>TDS Deducted</span>
+                      <span className="mono" style={{ color: 'var(--red)' }}>− {fmt(tds)}</span>
+                    </div>
+                  )}
+                  {hasBill && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
+                      <span style={{ color: 'var(--text2)' }}>Net Payable (Bill)</span>
+                      <span className="mono">{fmt(netPayable)}</span>
+                    </div>
+                  )}
+                  {/* This voucher's amount */}
                   <div style={{ display: 'flex', justifyContent: 'space-between',
-                    padding: '10px 0 0', fontSize: 16, fontWeight: 700 }}>
-                    <span>Amount to Pay</span>
+                    padding: '10px 0 6px', fontSize: 15, fontWeight: 700 }}>
+                    <span>This Voucher</span>
                     <span className="mono">{fmt(amountToPay)}</span>
                   </div>
+                  {hasBill && (() => {
+                    const allocated = parseFloat(voucher.bill_allocated_amount) || 0;
+                    const remaining = netPayable - allocated;
+                    return (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between',
+                          padding: '5px 0', fontSize: 12, color: 'var(--text3)' }}>
+                          <span>Total Vouchers Raised</span>
+                          <span className="mono">{fmt(allocated)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between',
+                          padding: '5px 0 0', fontSize: 13, fontWeight: 600,
+                          color: remaining > 0.01 ? '#b45309' : 'var(--green)' }}>
+                          <span>{remaining > 0.01 ? '⚠ Balance Remaining' : '✓ Fully Allocated'}</span>
+                          <span className="mono">{remaining > 0.01 ? fmt(remaining) : fmt(0)}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>
             {/* ── SalesPro Status ── */}
             <SalesproStatusCard
-              paymentRef={voucher.payment_reference || null}
+              paymentRef={voucher.bill_payment_reference || null}
               supplierName={voucher.supplier_name || ''}
               voucherId={voucher.id}
               editing={editing}
+              paymentStatus={voucher.payment_status}
               onStatusSynced={() => fetchVoucher()}
             />
 
@@ -653,7 +626,7 @@ export default function VoucherDetail() {
                   </div>
                   {!showFinalReject ? (
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn btn-green" style={{ flex: 1, justifyContent: 'center' }} onClick={() => handleApproverVerify('approve')}>✓ Verify & Ready For Bank</button>
+                      <button className="btn btn-green" style={{ flex: 1, justifyContent: 'center' }} onClick={() => handleApproverVerify('approve')}>✓ Verify</button>
                       <button className="btn btn-red"   style={{ flex: 1, justifyContent: 'center' }} onClick={() => setShowFinalReject(true)}>✕ Reject</button>
                     </div>
                   ) : (
@@ -720,8 +693,8 @@ export default function VoucherDetail() {
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input style={{ flex: 1 }} placeholder="UTR / Transaction Ref No."
                       value={utrInput} onChange={e => setUtrInput(e.target.value)} />
-                    <button className="btn btn-green" onClick={handleSaveUtr} disabled={savingUtr || !utrInput.trim()}>
-                      {savingUtr ? 'Saving…' : 'Save'}
+                    <button className="btn btn-green" onClick={() => { if (!utrInput.trim()) { toast.error('Enter UTR number'); return; } setShowUtrModal(true); }} disabled={savingUtr}>
+                      Submit
                     </button>
                   </div>
                 </div>
@@ -729,7 +702,7 @@ export default function VoucherDetail() {
             )}
 
             {/* UTR display — once UTR is set on approved voucher */}
-            {['approved', 'downloaded'].includes(voucher.status) && voucher.utr_no && (
+            {[VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && voucher.utr_no && (
               <div className="card" style={{ marginBottom: 16, borderColor: '#86efac' }}>
                 <div className="card-head" style={{ background: '#f0faf4' }}>
                   <div className="card-title" style={{ color: 'var(--green)' }}>UTR Number</div>
@@ -744,7 +717,7 @@ export default function VoucherDetail() {
             )}
 
             {/* Rejected */}
-            {voucher.status === 'rejected' && (
+            {voucher.status === VS.REJECTED && (
               <div className="card" style={{ marginBottom: 16, borderColor: '#f09595' }}>
                 <div className="card-head" style={{ background: 'var(--red-l)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div className="card-title" style={{ color: 'var(--red)' }}>Rejected</div>
@@ -768,74 +741,6 @@ export default function VoucherDetail() {
                     {voucher.rejected_reason}
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Balance Vouchers — shows linked children + settlement summary */}
-            {Array.isArray(voucher.balance_vouchers) && voucher.balance_vouchers.length > 0 && (
-              <div className="card" style={{ marginBottom: 16}}>
-                <div className="card-head"><div className="card-title">Balance Vouchers</div></div>
-                <div className="card-body" style={{ padding: '10px 16px' }}>
-                  {voucher.balance_vouchers.map(bv => {
-                    const paid = !!bv.utr_no;
-                    return (
-                      <div key={bv.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <a href={`/${user.role}/vouchers/${bv.id}`} style={{ color: 'var(--primary)', fontWeight: 600 }}>
-                              {bv.voucher_no || bv.id.slice(0, 8)}
-                            </a>
-                            {/* <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, fontWeight: 600,
-                              background: paid ? '#dcfce7' : '#fef9c3',
-                              color:      paid ? '#166534' : '#92400e' }}>
-                              {paid ? `Paid · UTR ${bv.utr_no}` : 'Payment Pending'}
-                            </span> */}
-                            {bv.has_further_split && (
-                              <span style={{ fontSize: 11, color: 'var(--text3)' }}>↳ has further split</span>
-                            )}
-                          </span>
-                          <span className="mono">{fmt(parseFloat(bv.total_amount) || 0)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {/* Settlement summary */}
-                  {(() => {
-                    const balanceSplit   = voucher.balance_vouchers.reduce((s, bv) => s + (parseFloat(bv.total_amount) || 0), 0);
-                    const originalTotal  = parseFloat(voucher.total_amount) || 0;
-                    const netPayable     = originalTotal - balanceSplit;
-                    return (
-                      <div style={{ marginTop: 10, padding: '8px 0', fontSize: 13 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text2)', marginBottom: 4 }}>
-                          <span>Original Invoice Total</span>
-                          <span className="mono">{fmt(originalTotal)}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--red)', marginBottom: 4 }}>
-                          <span>Balance Split ({voucher.balance_vouchers.length} voucher{voucher.balance_vouchers.length > 1 ? 's' : ''})</span>
-                          <span className="mono">− {fmt(balanceSplit)}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700,
-                          borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 4 }}>
-                          <span>Net Payable (This Voucher)</span>
-                          <span className="mono">{fmt(netPayable)}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
-
-            {/* Source voucher link — shown on balance voucher side */}
-            {voucher.source_voucher_id && (
-              <div className="card" style={{ marginBottom: 16 }}>
-                <div className="card-head"><div className="card-title">Split From</div></div>
-                <div className="card-body" style={{ fontSize: 13, padding: '10px 16px' }}>
-                  This is a balance voucher split from{' '}
-                  <a href={`/${user.role}/vouchers/${voucher.source_voucher_id}`} style={{ color: 'var(--primary)', fontWeight: 700 }}>
-                    source voucher
-                  </a>.
-                </div>
               </div>
             )}
 
@@ -882,7 +787,7 @@ export default function VoucherDetail() {
                           <span style={{ fontWeight: 600 }}>{a.user_name || 'System'}</span>
                           <span style={{ color: 'var(--text3)', margin: '0 6px' }}>·</span>
                           <span>{a.description}</span>
-                          <span style={{ color: 'var(--text3)', marginLeft: 8, fontSize: 11 }}>{fmtDate(a.created_at)}</span>
+                          <span style={{ color: 'var(--text3)', marginLeft: 8, fontSize: 11 }}>{fmtDateTime(a.created_at)}</span>
                         </div>
                       </div>
                     ))}
@@ -895,6 +800,27 @@ export default function VoucherDetail() {
           </div>
         </div>
       </div>
+
+      {/* ── UTR Confirm Modal ── */}
+      {showUtrModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 28, width: 380, boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>Confirm UTR Submission</h3>
+            <p style={{ fontSize: 13, color: 'var(--text2)', margin: '0 0 20px' }}>
+              UTR: <strong style={{ fontFamily: 'monospace' }}>{utrInput}</strong>
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setShowUtrModal(false)} disabled={savingUtr}>Cancel</button>
+              <button className="btn btn-green" onClick={() => handleSaveUtr(false)} disabled={savingUtr}>
+                {savingUtr ? 'Saving…' : 'Save'}
+              </button>
+              <button className="btn" style={{ background: '#0d6efd', color: '#fff', border: 'none' }} onClick={() => handleSaveUtr(true)} disabled={savingUtr}>
+                {savingUtr ? 'Saving…' : 'Save & Send'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Email Modal ── */}
       {showEmailModal && (

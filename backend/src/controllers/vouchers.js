@@ -9,6 +9,7 @@ const fs = require('fs');
 
 const VOUCHERS_DIR = path.join(__dirname, '../../vouchers');
 const { logActivity } = require('../utils/activityLog');
+const VS = require('../constants/voucherStatus');
 
 // ── Common SELECT fragment ─────────────────────────────────────────────────
 const VOUCHER_SELECT = `
@@ -17,32 +18,37 @@ const VOUCHER_SELECT = `
     u2.name  AS assigned_to_name,
     pds.code AS status,
     pdp.code AS payment_status,
-    s.supplier_name,
-    s.gstin  AS supplier_gstin,
+    bs.supplier_name,
+    bs.gstin AS supplier_gstin,
     CASE
-      WHEN v.assigned_at IS NOT NULL AND v.due_days IS NOT NULL
-      THEN (v.assigned_at::date + v.due_days)
+      WHEN v.assigned_at IS NOT NULL AND b.due_days IS NOT NULL
+      THEN (v.assigned_at::date + b.due_days)
       ELSE NULL
     END AS due_date,
-    -- linked balance vouchers (children)
-    (SELECT COALESCE(json_agg(json_build_object(
-        'id',             bv.id,
-        'voucher_no',     bv.voucher_no,
-        'total_amount',   bv.total_amount,
-        'utr_no',         bv.utr_no,
-        'status',         bvs.code,
-        'has_further_split', EXISTS(SELECT 1 FROM vouchers c WHERE c.source_voucher_id = bv.id)
-      ) ORDER BY bv.created_at), '[]'::json)
-     FROM vouchers bv
-     LEFT JOIN parameter_details bvs ON bvs.parameterdetid = bv.status_det_id
-     WHERE bv.source_voucher_id = v.id
-    ) AS balance_vouchers
+    b.bill_no,
+    b.bill_ref_no,
+    b.bill_date,
+    b.bill_status,
+    b.invoice_date      AS bill_invoice_date,
+    b.taxable_amount    AS bill_taxable_amount,
+    b.cgst              AS bill_cgst,
+    b.sgst              AS bill_sgst,
+    b.igst              AS bill_igst,
+    b.tds_amount        AS bill_tds_amount,
+    b.total_amount      AS bill_total_amount,
+    b.narration         AS bill_narration,
+    b.payment_reference AS bill_payment_reference,
+    b.supplier_id       AS bill_supplier_id,
+    b.company_bank_id   AS bill_company_bank_id,
+    b.due_days          AS bill_due_days,
+    COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount
   FROM vouchers v
-  LEFT JOIN users u1      ON v.created_by   = u1.id
-  LEFT JOIN users u2      ON v.assigned_to  = u2.id
+  LEFT JOIN users u1      ON v.created_by  = u1.id
+  LEFT JOIN users u2      ON v.assigned_to = u2.id
   LEFT JOIN parameter_details pds ON pds.parameterdetid = v.status_det_id
   LEFT JOIN parameter_details pdp ON pdp.parameterdetid = v.payment_status_det_id
-  LEFT JOIN suppliers s   ON s.id = v.supplier_id
+  LEFT JOIN bills b       ON b.id = v.bill_id
+  LEFT JOIN suppliers bs  ON bs.id = b.supplier_id
 `;
 
 // ── Short helpers ──────────────────────────────────────────────────────────
@@ -57,7 +63,8 @@ async function ensureVoucherNo(voucherId, existingNo) {
   return no;
 }
 
-async function createBalanceVoucher(req, res) {
+async function createBalanceVoucher(req, res) { // deprecated — balance handled at bill level
+  return res.status(410).json({ error: 'Balance vouchers are no longer supported. Create a new voucher from the bill.' });
   const { source_id } = req.body;
   if (!source_id) return res.status(400).json({ error: 'source_id required' });
 
@@ -88,7 +95,7 @@ async function createBalanceVoucher(req, res) {
       return res.status(400).json({ error: 'A balance voucher has already been created from this voucher. Only one balance voucher is allowed per source.' });
     }
 
-    const [statusId, payStatusId] = await Promise.all([sid('draft'), psid('unpaid')]);
+    const [statusId, payStatusId] = await Promise.all([sid(VS.DRAFT), psid('pending_verification')]);
 
     const seqRes  = await pool.query("SELECT nextval('voucher_no_seq') AS n");
     const newVoucherNo = `${String(seqRes.rows[0].n).padStart(5, '0')}`;
@@ -145,39 +152,17 @@ async function uploadAndScan(req, res) {
     const extracted = await extractInvoiceData(req.file.path, mimeType);
 
     const [statusId, payStatusId] = await Promise.all([
-      sid('draft'), psid('unpaid'),
+      sid(VS.DRAFT), psid('pending_verification'),
     ]);
-
-    // Try to match supplier by OCR-extracted name
-    let supplierId = null;
-    if (extracted.supplier_name) {
-      const sRes = await pool.query(
-        'SELECT id FROM suppliers WHERE LOWER(TRIM(supplier_name))=LOWER(TRIM($1)) AND is_active=true LIMIT 1',
-        [extracted.supplier_name]
-      );
-      supplierId = sRes.rows[0]?.id || null;
-    }
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
       const vResult = await client.query(
-        `INSERT INTO vouchers (
-          supplier_id,
-          invoice_date, narration,
-          taxable_amount, cgst, sgst, igst, total_amount,
-          status_det_id, payment_status_det_id, created_by
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-        RETURNING *`,
-        [
-          req.file.filename, req.file.originalname,
-          supplierId,
-          extracted.invoice_date || null, extracted.narration || '',
-          extracted.taxable_amount || 0, extracted.cgst || 0,
-          extracted.sgst || 0, extracted.igst || 0, extracted.total_amount || 0,
-          statusId, payStatusId, req.user.id,
-        ]
+        `INSERT INTO vouchers (narration, status_det_id, payment_status_det_id, created_by)
+         VALUES ($1,$2,$3,$4) RETURNING *`,
+        [extracted.narration || null, statusId, payStatusId, req.user.id]
       );
       const voucher = vResult.rows[0];
 
@@ -244,13 +229,14 @@ async function getVoucher(req, res) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // Supplier info comes via bill join (bill_supplier_id in VOUCHER_SELECT)
     let supplierInfo = null;
-    if (voucher.supplier_id) {
+    if (voucher.bill_supplier_id) {
       const sResult = await pool.query(
         `SELECT s.id, s.supplier_name, s.gstin, s.owned_by, u.name AS manager_name
          FROM suppliers s LEFT JOIN users u ON s.owned_by = u.id
          WHERE s.id = $1`,
-        [voucher.supplier_id]
+        [voucher.bill_supplier_id]
       );
       if (sResult.rows.length) supplierInfo = sResult.rows[0];
     }
@@ -285,35 +271,20 @@ async function getVoucher(req, res) {
 }
 
 async function createVoucher(req, res) {
-  const {
-    supplier_id, invoice_date, narration, taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
-    due_days, balance_amount,
-  } = req.body;
-
+  // Direct voucher creation (non-bill) — only narration kept
+  const { narration } = req.body;
   try {
-    const draft_id = await sid('draft');
-    const unpaid_id = await psid('unpaid');
-
+    const draft_id  = await sid(VS.DRAFT);
+    const unpaid_id = await psid('pending_verification');
     const seq = await pool.query("SELECT nextval('voucher_no_seq') AS n");
     const voucher_no = String(seq.rows[0].n).padStart(5, '0');
-
     const result = await pool.query(
-      `INSERT INTO vouchers
-         (voucher_no, supplier_id, invoice_date, narration,
-          taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
-          due_days, balance_amount, status_det_id, payment_status_det_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       RETURNING id`,
-      [
-        voucher_no, supplier_id || null, invoice_date || null, narration || null,
-        taxable_amount || 0, cgst || 0, sgst || 0, igst || 0, tds_amount || 0,
-        total_amount || 0, due_days || null, balance_amount || 0,
-        draft_id, unpaid_id, req.user.id,
-      ]
+      `INSERT INTO vouchers (voucher_no, narration, status_det_id, payment_status_det_id, created_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [voucher_no, narration || null, draft_id, unpaid_id, req.user.id]
     );
-
     const newId = result.rows[0].id;
-    await logActivity(newId, req.user.id, 'created', `Voucher ${voucher_no} created manually`);
+    await logActivity(newId, req.user.id, 'created', `Voucher ${voucher_no} created`);
     res.status(201).json({ id: newId, voucher_no });
   } catch (err) {
     console.error('createVoucher error:', err);
@@ -323,10 +294,7 @@ async function createVoucher(req, res) {
 
 async function updateVoucher(req, res) {
   const { id } = req.params;
-  const {
-    supplier_id, invoice_date, narration, taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
-    payment_status, payment_reference, line_items, due_days, balance_amount,
-  } = req.body;
+  const { narration, amount } = req.body;
 
   try {
     const existing = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
@@ -334,46 +302,18 @@ async function updateVoucher(req, res) {
     if (req.user.role === 'manager') return res.status(403).json({ error: 'Managers cannot edit voucher fields. Use approve/reject action instead.' });
 
     const v = existing.rows[0];
-    if (!['draft', 'assigned'].includes(v.status)) {
+    if (![VS.DRAFT, VS.ASSIGNED].includes(v.status)) {
       return res.status(400).json({ error: 'Cannot edit voucher in status: ' + v.status });
     }
 
-    const payment_status_det_id = payment_status
-      ? await psid(payment_status)
-      : null;
-
-
-
     await pool.query(
       `UPDATE vouchers SET
-        supplier_id=COALESCE($1,supplier_id),
-        invoice_date=COALESCE($2,invoice_date), narration=COALESCE($3,narration),
-        taxable_amount=COALESCE($4,taxable_amount), cgst=COALESCE($5,cgst),
-        sgst=COALESCE($6,sgst), igst=COALESCE($7,igst), tds_amount=COALESCE($8,tds_amount),
-        total_amount=COALESCE($9,total_amount),
-        payment_status_det_id=COALESCE($10,payment_status_det_id),
-        payment_reference=COALESCE($11,payment_reference),
-        due_days=$12,
-        balance_amount=$13,
-        updated_at=NOW()
-       WHERE id=$14`,
-      [supplier_id, invoice_date, narration, taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
-       payment_status_det_id, payment_reference,
-       due_days !== undefined ? due_days : v.due_days,
-       balance_amount !== undefined ? (parseFloat(balance_amount) || 0) : (v.balance_amount || 0),
-       id]
+        narration = COALESCE($1, narration),
+        amount    = COALESCE($2, amount),
+        updated_at = NOW()
+       WHERE id = $3`,
+      [narration ?? null, amount != null ? Number(amount) : null, id]
     );
-
-    // Auto-comment when balance_amount is set or changed
-    const oldBalance = parseFloat(v.balance_amount) || 0;
-    const newBalance = balance_amount !== undefined ? (parseFloat(balance_amount) || 0) : oldBalance;
-    if (newBalance !== oldBalance) {
-      const balanceComment = newBalance > 0
-        ? `Balance of ₹${newBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })} held back`
-        : `Balance cleared (previously ₹${oldBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })})`;
-      await logActivity(id, req.user.id, 'balance_changed', balanceComment,
-        { old_balance: oldBalance, new_balance: newBalance });
-    }
 
     res.json({ message: 'Voucher updated' });
   } catch (err) {
@@ -395,7 +335,7 @@ async function assignVoucher(req, res) {
     );
     if (!mgr.rows.length) return res.status(404).json({ error: 'Manager not found' });
 
-    const statusId = await sid('assigned');
+    const statusId = await sid(VS.ASSIGNED);
     await pool.query(
       'UPDATE vouchers SET assigned_to=$1, status_det_id=$2, assigned_at=NOW(), updated_at=NOW() WHERE id=$3',
       [manager_id, statusId, id]
@@ -421,9 +361,9 @@ async function managerAction(req, res) {
 
     const v = vResult.rows[0];
     if (v.assigned_to !== req.user.id) return res.status(403).json({ error: 'Not assigned to you' });
-    if (v.status !== 'assigned') return res.status(400).json({ error: 'Voucher is not in assigned state' });
+    if (v.status !== VS.ASSIGNED) return res.status(400).json({ error: 'Voucher is not in assigned state' });
 
-    const newCode   = action === 'approve' ? 'verification' : 'rejected';
+    const newCode   = action === 'approve' ? VS.APPROVED : VS.REJECTED;
     const newStatusId = await sid(newCode);
 
     await pool.query(
@@ -431,8 +371,8 @@ async function managerAction(req, res) {
       [newStatusId, action === 'reject' ? (rejected_reason || comment) : null, id]
     );
     await logActivity(id, req.user.id, 'status_changed',
-      action === 'approve' ? 'Sent for verification' : `Rejected: ${rejected_reason || comment || ''}`,
-      { from: 'assigned', to: newCode });
+      action === 'approve' ? 'Approved by manager' : `Rejected: ${rejected_reason || comment || ''}`,
+      { from: VS.ASSIGNED, to: newCode });
     if (comment && action === 'approve') {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
@@ -454,9 +394,9 @@ async function approverVerify(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const vrow = vResult.rows[0];
-    if (vrow.status !== 'verification') return res.status(400).json({ error: 'Voucher must be in verification status' });
+    if (vrow.status !== VS.APPROVED) return res.status(400).json({ error: 'Voucher must be in approved status' });
 
-    const newCode     = action === 'approve' ? 'ready_for_bank' : 'rejected';
+    const newCode     = action === 'approve' ? VS.REVIEWED : VS.REJECTED;
     const newStatusId = await sid(newCode);
 
     await pool.query(
@@ -464,8 +404,8 @@ async function approverVerify(req, res) {
       [newStatusId, action === 'reject' ? rejected_reason.trim() : null, id]
     );
     await logActivity(id, req.user.id, 'status_changed',
-      action === 'approve' ? 'Verified — ready for bank' : `Rejected at verification: ${rejected_reason.trim()}`,
-      { from: 'verification', to: newCode });
+      action === 'approve' ? 'Reviewed by approver' : `Rejected at review: ${rejected_reason.trim()}`,
+      { from: VS.APPROVED, to: newCode });
     if (comment) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
@@ -487,21 +427,18 @@ async function adminFinalApproval(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const vrow = vResult.rows[0];
-    if (vrow.status !== 'proceed') return res.status(400).json({ error: 'Voucher must be proceed before approval' });
+    if (vrow.status !== VS.EXPORTED) return res.status(400).json({ error: 'Voucher must be exported before final approval' });
 
-    const newCode     = action === 'approve' ? 'approved' : 'rejected';
+    const newCode     = action === 'approve' ? VS.READY_TO_REMIT : VS.REJECTED;
     const newStatusId = await sid(newCode);
 
     await pool.query(
       'UPDATE vouchers SET status_det_id=$1, rejected_reason=$2, updated_at=NOW() WHERE id=$3',
       [newStatusId, action === 'reject' ? rejected_reason.trim() : null, id]
     );
-
-    // Source voucher total is already reduced at balance-voucher creation time
-
     await logActivity(id, req.user.id, 'status_changed',
-      action === 'approve' ? 'Approved for payment' : `Rejected at final approval: ${rejected_reason.trim()}`,
-      { from: 'proceed', to: newCode });
+      action === 'approve' ? 'Ready to remit' : `Rejected at final approval: ${rejected_reason.trim()}`,
+      { from: VS.EXPORTED, to: newCode });
     if (comment) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
@@ -523,7 +460,7 @@ async function updateUtr(req, res) {
        LEFT JOIN parameter_details pd ON pd.parameterdetid = v.status_det_id
        WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
-    if (vResult.rows[0].status !== 'approved') return res.status(400).json({ error: 'Voucher must be in approved status to enter UTR' });
+    if (vResult.rows[0].status !== VS.READY_TO_REMIT) return res.status(400).json({ error: 'Voucher must be in Ready to Remit status to enter UTR' });
     await pool.query('UPDATE vouchers SET utr_no=$1, updated_at=NOW() WHERE id=$2', [utr_no.trim(), id]);
     res.json({ message: 'UTR saved', utr_no: utr_no.trim() });
   } catch (err) {
@@ -537,16 +474,16 @@ async function reopenVoucher(req, res) {
   try {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
-    if (vResult.rows[0].status !== 'rejected') return res.status(400).json({ error: 'Only rejected vouchers can be reopened' });
+    if (vResult.rows[0].status !== VS.REJECTED) return res.status(400).json({ error: 'Only rejected vouchers can be reopened' });
 
-    const draftId = await sid('draft');
+    const draftId = await sid(VS.DRAFT);
     await pool.query(
       `UPDATE vouchers SET status_det_id=$1, rejected_reason=NULL, assigned_to=NULL, updated_at=NOW() WHERE id=$2`,
       [draftId, id]
     );
     await logActivity(id, req.user.id, 'status_changed', 'Voucher reopened and reset to draft',
-      { from: 'rejected', to: 'draft' });
-    res.json({ message: 'Voucher reopened', status: 'draft' });
+      { from: VS.REJECTED, to: VS.DRAFT });
+    res.json({ message: 'Voucher reopened', status: VS.DRAFT });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -573,8 +510,8 @@ async function generateVoucher(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const voucher = vResult.rows[0];
-    if (!['approved', 'downloaded'].includes(voucher.status)) {
-      return res.status(400).json({ error: 'Voucher must be approved before generating' });
+    if (![VS.READY_TO_REMIT, VS.PAID].includes(voucher.status)) {
+      return res.status(400).json({ error: 'Voucher must be Ready to Remit before generating' });
     }
     if (!voucher.utr_no?.trim()) {
       return res.status(400).json({ error: 'UTR number is required before generating PDF' });
@@ -585,8 +522,9 @@ async function generateVoucher(req, res) {
        LEFT JOIN parameter_details pd ON pd.parameterdetid=u.role_det_id
        WHERE vc.voucher_id=$1 ORDER BY vc.created_at`, [id]);
     let companyBank = null;
-    if (voucher.company_bank_id) {
-      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [voucher.company_bank_id]);
+    const bankId = voucher.bill_company_bank_id || voucher.company_bank_id;
+    if (bankId) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [bankId]);
       companyBank = bk.rows[0] || null;
     }
     voucher.voucher_no = await ensureVoucherNo(id, voucher.voucher_no);
@@ -606,8 +544,8 @@ async function downloadVoucher(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const voucher = vResult.rows[0];
-    if (!['approved', 'downloaded'].includes(voucher.status)) {
-      return res.status(400).json({ error: 'Only approved vouchers can be downloaded' });
+    if (![VS.READY_TO_REMIT, VS.PAID].includes(voucher.status)) {
+      return res.status(400).json({ error: 'Only Ready to Remit vouchers can be downloaded' });
     }
 
     const comments  = await pool.query(
@@ -616,8 +554,9 @@ async function downloadVoucher(req, res) {
        LEFT JOIN parameter_details pd ON pd.parameterdetid=u.role_det_id
        WHERE vc.voucher_id=$1 ORDER BY vc.created_at`, [id]);
     let companyBank = null;
-    if (voucher.company_bank_id) {
-      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [voucher.company_bank_id]);
+    const bankId = voucher.bill_company_bank_id || voucher.company_bank_id;
+    if (bankId) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [bankId]);
       companyBank = bk.rows[0] || null;
     }
 
@@ -633,12 +572,12 @@ async function downloadVoucher(req, res) {
       pdfBuffer = fs.readFileSync(path.join(VOUCHERS_DIR, fileName));
     }
 
-    // Mark downloaded
-    const downloadedId = await sid('downloaded');
-    const approvedId   = await sid('approved');
+    // Mark paid
+    const paidId          = await sid(VS.PAID);
+    const readyToRemitId  = await sid(VS.READY_TO_REMIT);
     await pool.query(
       'UPDATE vouchers SET status_det_id=$1, updated_at=NOW() WHERE id=$2 AND status_det_id=$3',
-      [downloadedId, id, approvedId]
+      [paidId, id, readyToRemitId]
     );
 
     const outName = voucher.voucher_no
@@ -676,12 +615,14 @@ async function getInvoiceFile(req, res) {
 async function deleteVoucher(req, res) {
   const { id } = req.params;
   try {
-    const r = await pool.query('SELECT id, voucher_pdf_path FROM vouchers WHERE id=$1', [id]);
+    const r = await pool.query('SELECT id, voucher_pdf_path, bill_id FROM vouchers WHERE id=$1', [id]);
     if (!r.rows.length) return res.status(404).json({ error: 'Voucher not found' });
 
+    const { voucher_pdf_path, bill_id } = r.rows[0];
+
     // Delete generated voucher PDF if it exists
-    if (r.rows[0].voucher_pdf_path) {
-      const pdfPath = path.join(VOUCHERS_DIR, r.rows[0].voucher_pdf_path);
+    if (voucher_pdf_path) {
+      const pdfPath = path.join(VOUCHERS_DIR, voucher_pdf_path);
       if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath);
     }
 
@@ -693,6 +634,13 @@ async function deleteVoucher(req, res) {
     }
 
     await pool.query('DELETE FROM vouchers WHERE id=$1', [id]);
+
+    // Refresh bill status if this voucher was linked to a bill
+    if (bill_id) {
+      const { refreshBillStatus } = require('./bills');
+      await refreshBillStatus(bill_id);
+    }
+
     res.json({ message: 'Voucher deleted' });
   } catch (err) {
     console.error(err);
@@ -766,7 +714,7 @@ async function exportVouchers(req, res) {
     );
     const debitAccNo = companyBankRes.rows[0]?.account_number || '';
 
-    const readyId = await sid('ready_for_bank');
+    const readyId = await sid(VS.REVIEWED);
     let query, params;
     if (ids && ids.length) {
       query  = `${VOUCHER_SELECT} WHERE v.id=ANY($1) AND v.status_det_id=$2`;
@@ -776,7 +724,7 @@ async function exportVouchers(req, res) {
       params = [readyId];
     }
     const vRes = await pool.query(query, params);
-    if (!vRes.rows.length) return res.status(400).json({ error: 'No ready_for_bank vouchers found' });
+    if (!vRes.rows.length) return res.status(400).json({ error: 'No reviewed vouchers found for export' });
 
     const XLSX = require('xlsx');
     const today = new Date();
@@ -802,16 +750,16 @@ async function exportVouchers(req, res) {
         PYMT_PROD_TYPE_CODE: 'PAB_VENDOR', PYMT_MODE: 'NEFT',
         DEBIT_ACC_NO: debitAccNo, BNF_NAME: bnf_name,
         BENE_ACC_NO: bene_acc, BENE_IFSC: bene_ifsc,
-        AMOUNT: Number(v.total_amount) || 0,
+        AMOUNT: Number(v.amount) || Number(v.bill_total_amount) || 0,
         DEBIT_NARR: v.supplier_name || '', CREDIT_NARR: v.supplier_name || '',
         MOBILE_NUM: admin.mobile_no || '', EMAIL_ID: admin.email || '',
-        REMARK: v.bill_ref_no || v.payment_reference || '', PYMT_DATE: pymt_date,
+        REMARK: v.bill_ref_no || v.bill_payment_reference || '', PYMT_DATE: pymt_date,
         REF_NO: 'Na', ADDL_INFO1: '', ADDL_INFO2: '', ADDL_INFO3: '', ADDL_INFO4: '', ADDL_INFO5: '',
       });
       exportedIds.push(v.id);
     }
 
-    const exportedId = await sid('proceed');
+    const exportedId = await sid(VS.EXPORTED);
     await pool.query('UPDATE vouchers SET status_det_id=$1, updated_at=NOW() WHERE id=ANY($2)',
       [exportedId, exportedIds]);
 
@@ -832,10 +780,12 @@ async function exportVouchers(req, res) {
 async function syncPaymentStatus(req, res) {
   const { id } = req.params;
   try {
-    const vResult = await pool.query('SELECT payment_reference FROM vouchers WHERE id=$1', [id]);
+    const vResult = await pool.query(
+      `SELECT b.payment_reference AS bill_payment_reference
+       FROM vouchers v LEFT JOIN bills b ON b.id = v.bill_id WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
-    const { payment_reference } = vResult.rows[0];
-    if (!payment_reference?.trim()) return res.status(400).json({ error: 'Voucher has no payment_reference to look up' });
+    const payment_reference = vResult.rows[0].bill_payment_reference?.trim();
+    if (!payment_reference) return res.status(400).json({ error: 'Voucher has no payment_reference to look up' });
 
     const BASE = (process.env.SALESPRO_API_URL || '').replace(/\/$/, '');
     if (!BASE) return res.status(500).json({ error: 'SALESPRO_API_URL not configured' });
@@ -852,9 +802,9 @@ async function syncPaymentStatus(req, res) {
       totalOutstanding += Number(r.Outstanding ?? r.outstanding ?? 0);
     }
 
-    let newCode = 'unpaid';
+    let newCode = spRows.length === 0 ? 'pending_verification' : 'unpaid';
     if (spRows.length > 0 && totalPaid > 0 && totalOutstanding <= 0) newCode = 'paid';
-    else if (totalPaid > 0 && totalOutstanding > 0) newCode = 'partial';
+    else if (spRows.length > 0 && totalPaid > 0 && totalOutstanding > 0) newCode = 'partial';
 
     const newPayId = await psid(newCode);
     await pool.query('UPDATE vouchers SET payment_status_det_id=$1, updated_at=NOW() WHERE id=$2', [newPayId, id]);
@@ -882,22 +832,24 @@ async function emailPreview(req, res) {
     }
 
     let toEmails = [];
-    if (voucher.supplier_id) {
+    const supplierId = voucher.bill_supplier_id;
+    if (supplierId) {
       const cr = await pool.query(
         'SELECT email FROM supplier_contacts WHERE supplier_id=$1 AND is_primary=true AND email IS NOT NULL LIMIT 1',
-        [voucher.supplier_id]);
+        [supplierId]);
       if (cr.rows.length) toEmails = [cr.rows[0].email];
       else {
         const ar = await pool.query(
           'SELECT email FROM supplier_contacts WHERE supplier_id=$1 AND email IS NOT NULL LIMIT 1',
-          [voucher.supplier_id]);
+          [supplierId]);
         if (ar.rows.length) toEmails = [ar.rows[0].email];
       }
     }
 
     const html = buildPaymentAdviceHTML(voucher, company, companyBank, '');
     const companyName = company?.company_name || 'Accounts Payable';
-    const subject = `Payment Advice — ${companyName} — ₹${Number(voucher.total_amount||0).toLocaleString('en-IN')}`;
+    const amountToPay = Number(voucher.amount) || 0;
+    const subject = `Payment Advice — ${companyName} — ₹${amountToPay.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
     res.json({ html, subject, to: toEmails, cc: [], bcc: [] });
   } catch (err) {
     console.error('emailPreview error:', err);
@@ -914,7 +866,7 @@ async function sendAdviceEmail(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const voucher = vResult.rows[0];
-    if (voucher.status !== 'proceed') return res.status(400).json({ error: 'Voucher must be proceed before final approval' });
+    if (voucher.status !== VS.EXPORTED) return res.status(400).json({ error: 'Voucher must be exported before final approval' });
 
     let finalHtml = html;
     if (!finalHtml) {
@@ -946,7 +898,6 @@ async function sendAdviceEmail(req, res) {
 }
 
 module.exports = {
-  createBalanceVoucher,
   uploadAndScan, createVoucher, listVouchers, getVoucher, updateVoucher, deleteVoucher,
   assignVoucher, managerAction, approverVerify, adminFinalApproval, reopenVoucher,
   addComment, generateVoucher, downloadVoucher, getInvoiceFile,

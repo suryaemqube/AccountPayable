@@ -167,7 +167,7 @@ async function parseXl(req, res) {
     if (!parsed.length) return res.status(400).json({ error: 'No voucher rows found in file' });
 
     const suppRes = await pool.query(
-      'SELECT id, supplier_name FROM suppliers WHERE is_active = true ORDER BY supplier_name'
+      "SELECT id, supplier_name, approval_status FROM suppliers WHERE is_active = true ORDER BY supplier_name"
     );
     const bankRes = await pool.query(`
       SELECT cb.*, cd.company_name
@@ -196,7 +196,7 @@ async function parseXl(req, res) {
       const billRefs = candidates.map(v => v.bill_ref_no);
       const dupRes = await pool.query(
         `SELECT bill_ref_no, supplier_id::text, invoice_date::text
-         FROM vouchers
+         FROM bills
          WHERE bill_ref_no = ANY($1::text[])`,
         [billRefs]
       );
@@ -226,12 +226,9 @@ async function confirmImport(req, res) {
     return res.status(400).json({ error: 'vouchers array required' });
   }
 
-  // Resolve det_ids once before the loop
-  const [statusId, payStatusId, salableId, consumptionId] = await Promise.all([
-    paramCache.detId('Voucher Status',  'draft'),
-    paramCache.detId('Payment Status',  'unpaid'),
-    paramCache.detId('Purchase Type',   'SALABLE'),
-    paramCache.detId('Purchase Type',   'CONSUMPTION'),
+  const [salableId, consumptionId] = await Promise.all([
+    paramCache.detId('Purchase Type', 'SALABLE'),
+    paramCache.detId('Purchase Type', 'CONSUMPTION'),
   ]);
 
   function purchaseTypeId(code) {
@@ -246,13 +243,27 @@ async function confirmImport(req, res) {
   if (candidates.length) {
     const dupRes = await pool.query(
       `SELECT bill_ref_no, supplier_id::text, invoice_date::text
-       FROM vouchers WHERE bill_ref_no = ANY($1::text[])`,
+       FROM bills WHERE bill_ref_no = ANY($1::text[])`,
       [candidates.map(v => v.bill_ref_no)]
     );
     dupRes.rows.forEach(r => {
       const d = r.invoice_date ? String(r.invoice_date).slice(0, 10) : '';
       existingKeys.add(`${r.bill_ref_no}|${r.supplier_id}|${d}`);
     });
+  }
+
+  // Pre-check: all matched suppliers must be approved
+  const supplierIds = [...new Set(vouchers.filter(v => v.supplier_id).map(v => v.supplier_id))];
+  if (supplierIds.length) {
+    const suppRes = await pool.query(
+      `SELECT id, supplier_name, approval_status FROM suppliers WHERE id = ANY($1::uuid[])`,
+      [supplierIds]
+    );
+    const unapproved = suppRes.rows.filter(s => s.approval_status !== 'approved');
+    if (unapproved.length) {
+      const names = unapproved.map(s => s.supplier_name).join(', ');
+      return res.status(400).json({ error: `Cannot import — supplier approval pending: ${names}` });
+    }
   }
 
   const client = await pool.connect();
@@ -262,25 +273,25 @@ async function confirmImport(req, res) {
     const skipped = [];
 
     for (const v of vouchers) {
-      // Skip if all three match: bill_ref_no + supplier_id + date
       const dateKey = v.date ? String(v.date).slice(0, 10) : '';
       const key = `${v.bill_ref_no}|${v.supplier_id}|${dateKey}`;
       if (v.bill_ref_no && v.supplier_id && dateKey && existingKeys.has(key)) {
         skipped.push(v.bill_ref_no);
         continue;
       }
+
+      const grossTotal = (v.taxable_amount || 0) + (v.cgst || 0) + (v.sgst || 0) + (v.igst || 0);
+
       const r = await client.query(
-        `INSERT INTO vouchers (
-           voucher_no,
-           supplier_id, invoice_date,
+        `INSERT INTO bills (
+           bill_no, supplier_id, invoice_date,
            taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
            payment_reference, narration,
            tally_vch_no, bill_ref_no, bill_date,
-           due_days, purchase_type_det_id,
-           company_bank_id, status_det_id, payment_status_det_id, created_by
+           due_days, purchase_type_det_id, company_bank_id, created_by
          ) VALUES (
-           LPAD(nextval('voucher_no_seq')::text, 5, '0'),
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+           'BILL-' || LPAD(nextval('bill_no_seq')::text, 5, '0'),
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          RETURNING *`,
         [
           v.supplier_id                        || null,
@@ -290,7 +301,7 @@ async function confirmImport(req, res) {
           v.sgst                               || 0,
           v.igst                               || 0,
           v.tds_amount                         || 0,
-          v.total_amount                       || 0,
+          grossTotal,
           v.payment_reference                  || '',
           v.narration                          || '',
           v.vch_no                             || '',
@@ -299,15 +310,10 @@ async function confirmImport(req, res) {
           v.due_days                           || null,
           purchaseTypeId(v.purchase_type_code) || null,
           v.company_bank_id                    || null,
-          statusId,
-          payStatusId,
           req.user.id,
         ]
       );
       created.push(r.rows[0]);
-      await logActivity(r.rows[0].id, req.user.id, 'created',
-        `Voucher created via XL import (bill ref: ${v.bill_ref_no || '—'})`,
-        { bill_ref_no: v.bill_ref_no, supplier_name: v.party_name }, client);
     }
 
     await client.query('COMMIT');

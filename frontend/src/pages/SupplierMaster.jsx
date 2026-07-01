@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
+import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -18,6 +19,7 @@ const DOCUMENT_TYPES = [
   { key: 'bank_verification', label: 'Bank Verification Letter',         mandatory: false },
   { key: 'company_reg_cert',  label: 'Company Registration Certificate', mandatory: false },
   { key: 'nda',               label: 'NDA (if required)',                 mandatory: false },
+  { key: 'udyam',             label: 'UDYAM Certificate',                mandatory: false },
 ];
 
 // ── Factories ─────────────────────────────────────────────────────────────────
@@ -57,47 +59,102 @@ function fmtDate(d) {
 }
 
 // Reusable document row (used in Documents section)
-function DocRow({ dt, uploaded, pending, isUploading, supplierId, onUpload, onDelete, onStage, onRemoveStage, fileRef }) {
+function DocPreviewModal({ apiPath, name, onClose }) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+  const isPdf = /\.pdf$/i.test(name);
+  const isImg = /\.(jpg|jpeg|png|gif|webp)$/i.test(name);
+
+  useEffect(() => {
+    let objectUrl;
+    api.get(apiPath, { responseType: 'blob' })
+      .then(r => {
+        objectUrl = URL.createObjectURL(r.data);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => setError('Could not load document'))
+      .finally(() => setLoading(false));
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [apiPath]);
+
   return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', background:'var(--surface2)', borderRadius:8, gap:12 }}>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:13, fontWeight:500 }}>
-          {dt.label}
-          {dt.mandatory
-            ? <span style={{ color:'#ef4444', marginLeft:4, fontSize:11 }}>*</span>
-            : <span style={{ color:'var(--text3)', marginLeft:4, fontSize:11 }}>(optional)</span>}
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--bg)', borderRadius:10, overflow:'hidden', width:'min(90vw,860px)', maxHeight:'90vh', display:'flex', flexDirection:'column', boxShadow:'0 8px 40px rgba(0,0,0,0.4)' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
+          <span style={{ fontSize:13, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{name}</span>
+          <button className="btn btn-sm" onClick={onClose}>✕ Close</button>
         </div>
-        {uploaded && <div style={{ fontSize:11, color:'var(--text3)', marginTop:2 }}>{uploaded.original_name}{uploaded.file_size ? ` · ${Math.round(uploaded.file_size/1024)} KB` : ''}</div>}
-        {pending  && <div style={{ fontSize:11, color:'#ca8a04', marginTop:2 }}>{pending.name} · {Math.round(pending.size/1024)} KB <span style={{ marginLeft:6, background:'#fef9c3', border:'1px solid #fde047', borderRadius:4, padding:'0 5px' }}>staged</span></div>}
-      </div>
-      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-        {uploaded ? (
-          <>
-            <a href={`/api/suppliers/${supplierId}/documents/${uploaded.id}`} target="_blank" rel="noreferrer" className="btn btn-sm">View</a>
-            <button className="btn btn-sm" style={{ color:'var(--red)' }} onClick={() => onDelete(uploaded)}>Remove</button>
-          </>
-        ) : pending ? (
-          <>
-            <span style={{ fontSize:12, color:'#ca8a04' }}>Will upload on save</span>
-            <button className="btn btn-sm" style={{ color:'var(--red)' }} onClick={onRemoveStage}>×</button>
-          </>
-        ) : (
-          <>
-            <input type="file" ref={fileRef} style={{ display:'none' }} accept=".pdf,.jpg,.jpeg,.png"
-              onChange={e => onUpload(e.target.files[0])} />
-            <button className="btn btn-sm" disabled={isUploading} onClick={() => fileRef.current?.click()}>
-              {isUploading ? 'Uploading…' : 'Upload'}
-            </button>
-          </>
-        )}
+        <div style={{ flex:1, overflow:'auto', minHeight:300, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          {loading && <div style={{ color:'var(--text3)', padding:40 }}>Loading…</div>}
+          {error   && <div style={{ color:'var(--red)', padding:40 }}>{error}</div>}
+          {blobUrl && (isPdf ? (
+            <iframe src={blobUrl} style={{ width:'100%', height:'75vh', border:'none' }} title={name} />
+          ) : isImg ? (
+            <img src={blobUrl} alt={name} style={{ maxWidth:'100%', display:'block', margin:'0 auto' }} />
+          ) : (
+            <div style={{ padding:40, textAlign:'center', color:'var(--text3)' }}>
+              <div style={{ fontSize:40, marginBottom:12 }}>📄</div>
+              <div style={{ marginBottom:12 }}>{name}</div>
+              <a href={blobUrl} download={name} className="btn btn-primary">Download</a>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
+  );
+}
+
+function DocRow({ dt, uploaded, pending, isUploading, supplierId, onUpload, onDelete, onStage, onRemoveStage, fileRef }) {
+  const [preview, setPreview] = useState(false);
+  const apiPath = uploaded ? `/suppliers/${supplierId}/documents/${uploaded.id}` : null;
+  return (
+    <>
+      {preview && <DocPreviewModal apiPath={apiPath} name={uploaded?.original_name || dt.label} onClose={() => setPreview(false)} />}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', background:'var(--surface2)', borderRadius:8, gap:12 }}>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:500 }}>
+            {dt.label}
+            {dt.mandatory
+              ? <span style={{ color:'#ef4444', marginLeft:4, fontSize:11 }}>*</span>
+              : <span style={{ color:'var(--text3)', marginLeft:4, fontSize:11 }}>(optional)</span>}
+          </div>
+          {uploaded && <div style={{ fontSize:11, color:'var(--text3)', marginTop:2 }}>{uploaded.original_name}{uploaded.file_size ? ` · ${Math.round(uploaded.file_size/1024)} KB` : ''}</div>}
+          {pending  && <div style={{ fontSize:11, color:'#ca8a04', marginTop:2 }}>{pending.name} · {Math.round(pending.size/1024)} KB <span style={{ marginLeft:6, background:'#fef9c3', border:'1px solid #fde047', borderRadius:4, padding:'0 5px' }}>staged</span></div>}
+        </div>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {uploaded ? (
+            <>
+              <button className="btn btn-sm" onClick={() => setPreview(true)}>👁 View</button>
+              <button className="btn btn-sm" style={{ color:'var(--red)' }} onClick={() => onDelete(uploaded)}>Remove</button>
+            </>
+          ) : pending ? (
+            <>
+              <span style={{ fontSize:12, color:'#ca8a04' }}>Will upload on save</span>
+              <button className="btn btn-sm" style={{ color:'var(--red)' }} onClick={onRemoveStage}>×</button>
+            </>
+          ) : (
+            <>
+              <input type="file" ref={fileRef} style={{ display:'none' }} accept=".pdf,.jpg,.jpeg,.png"
+                onChange={e => onUpload(e.target.files[0])} />
+              <button className="btn btn-sm" disabled={isUploading} onClick={() => fileRef.current?.click()}>
+                {isUploading ? 'Uploading…' : 'Upload'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
 // ── Supplier Form ─────────────────────────────────────────────────────────────
 function SupplierForm({ supplierId, onSaved }) {
   const isEdit = !!supplierId;
+  const { user: formUser } = useAuth();
+  const formCanApprove = isEdit && (formUser?.role === 'admin' || formUser?.role === 'approver');
 
   const [form, setForm] = useState({
     // Basic Information
@@ -132,6 +189,9 @@ function SupplierForm({ supplierId, onSaved }) {
   const [pendingFiles,    setPendingFiles]    = useState({});
   const [showReasonModal, setShowReasonModal] = useState(false);
   const [changeReason,    setChangeReason]    = useState('');
+  const [approvalModal,   setApprovalModal]   = useState(null); // { action: 'approve'|'reject' }
+  const [approvalNotes,   setApprovalNotes]   = useState('');
+  const [approvalSaving,  setApprovalSaving]  = useState(false);
   const fileRefs = useRef({});
 
   useEffect(() => {
@@ -229,9 +289,8 @@ function SupplierForm({ supplierId, onSaved }) {
     if (!form.msme_reg_number.trim())  return 'MSME Registration Number is required';
     const c0 = contacts[0];
     if (!c0?.primary_contact_name?.trim()) return 'Contact Person Name is required';
-    if (!c0?.designation?.trim())          return 'Contact Designation is required';
     if (!c0?.mobile?.trim())               return 'Contact Mobile Number is required';
-    if (!c0?.website?.trim())              return 'Contact Website is required';
+    // if (!c0?.website?.trim())              return 'Contact Website is required';
     const b0 = banks[0];
     if (!b0?.bank_name?.trim())           return 'Bank Name is required';
     if (!b0?.branch_name?.trim())         return 'Bank Branch Name is required';
@@ -250,12 +309,12 @@ function SupplierForm({ supplierId, onSaved }) {
   function handleSave() {
     const err = validate();
     if (err) return toast.error(err);
-    if (isEdit) {
-      // Show reason modal before updating
+    if (isEdit && formUser?.role !== 'admin' && form.approval_status === 'approved') {
+      // Only ask for a reason when editing an already-approved supplier
       setChangeReason('');
       setShowReasonModal(true);
     } else {
-      doSave('New');
+      doSave('Updated');
     }
   }
 
@@ -272,7 +331,7 @@ function SupplierForm({ supplierId, onSaved }) {
     try {
       if (isEdit) {
         await api.put(`/suppliers/${supplierId}`, payload);
-        toast.success('Supplier updated — pending re-approval');
+        toast.success(formUser?.role === 'admin' ? 'Supplier updated' : 'Supplier updated — pending re-approval');
       } else {
         const r = await api.post('/suppliers', payload);
         const newId = r.data.supplier.id;
@@ -287,6 +346,24 @@ function SupplierForm({ supplierId, onSaved }) {
       toast.error(err.response?.data?.error || 'Save failed');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleFormApproval() {
+    if (!approvalModal) return;
+    setApprovalSaving(true);
+    try {
+      await api.post(`/suppliers/${supplierId}/approve`, { action: approvalModal.action, notes: approvalNotes });
+      toast.success(approvalModal.action === 'approve' ? 'Supplier approved' : 'Supplier rejected');
+      setApprovalModal(null); setApprovalNotes('');
+      // Refresh form data
+      const r = await api.get(`/suppliers/${supplierId}`);
+      const s = r.data.supplier;
+      setForm(f => ({ ...f, approval_status: s.approval_status, approved_by_name: s.approved_by_name||'', last_approved_at: s.last_approved_at, approval_notes: s.approval_notes||'' }));
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Action failed');
+    } finally {
+      setApprovalSaving(false);
     }
   }
 
@@ -321,12 +398,12 @@ function SupplierForm({ supplierId, onSaved }) {
               </select>
             </div>
             <div style={fg}>
-              <Label text="GST Number" required />
-              <input style={inp} value={form.gstin} onChange={e => setF('gstin', e.target.value.toUpperCase())} placeholder="27AAXCA1234M1Z5" maxLength={15} />
+              <Label text="PAN Number" required />
+              <input style={inp} value={form.pan_number} onChange={e => setF('pan_number', e.target.value.toUpperCase())} placeholder="AAXCA1234M" maxLength={10} />
             </div>
             <div style={fg}>
-              <Label text="CIN Number" />
-              <input style={inp} value={form.cin_number} onChange={e => setF('cin_number', e.target.value.toUpperCase())} placeholder="U12345MH2000PTC123456" />
+              <Label text="GST Number" required />
+              <input style={inp} value={form.gstin} onChange={e => setF('gstin', e.target.value.toUpperCase())} placeholder="27AAXCA1234M1Z5" maxLength={15} />
             </div>
           </div>
           <div style={row3}>
@@ -334,6 +411,39 @@ function SupplierForm({ supplierId, onSaved }) {
               <Label text="MSME Registration Number" required />
               <input style={inp} value={form.msme_reg_number} onChange={e => setF('msme_reg_number', e.target.value)} />
             </div>
+            <div style={fg}>
+              <Label text="UDYAM Registration Number" required />
+              <input style={inp} value={form.udyam_reg_number} onChange={e => setF('udyam_reg_number', e.target.value)} />
+            </div>
+            <div style={fg}>
+              <Label text="CIN Number" />
+              <input style={inp} value={form.cin_number} onChange={e => setF('cin_number', e.target.value.toUpperCase())} placeholder="U12345MH2000PTC123456" />
+            </div>
+
+            <div style={{ ...fg, justifyContent:'flex-end' }}>
+              <label style={{ fontSize:11, color:'var(--text3)', textTransform:'uppercase', letterSpacing:'0.4px', display:'block', marginBottom:4 }}>&nbsp;</label>
+              <div style={{ display:'flex', alignItems:'center', gap:8, paddingTop:6 }}>
+                <input type="checkbox" id="tds_applicable" checked={form.tds_applicable} onChange={e => setF('tds_applicable', e.target.checked)} style={{ width:14, height:14, cursor:'pointer' }} />
+                <label htmlFor="tds_applicable" style={{ fontSize:13, cursor:'pointer' }}>TDS Applicable</label>
+              </div>
+            </div>
+            {form.tds_applicable &&
+            <div style={fg}>
+              <Label text="Lower Deduction Certificate" />
+              <input style={inp} value={form.lower_deduction_cert} onChange={e => setF('lower_deduction_cert', e.target.value)} placeholder="Certificate no. (optional)" />
+            </div>}
+
+
+            <div style={fg}>
+              <Label text="PF Registration" />
+              <input style={inp} value={form.pf_registration} onChange={e => setF('pf_registration', e.target.value)} placeholder="Mandatory if Services" />
+            </div>
+            <div style={fg}>
+              <Label text="ESIC Registration" />
+              <input style={inp} value={form.esic_registration} onChange={e => setF('esic_registration', e.target.value)} placeholder="Mandatory if Services" />
+            </div>
+
+            
             <div style={fg}>
               <Label text="Owned By (Manager)" />
               <select style={inp} value={form.owned_by} onChange={e => setF('owned_by', e.target.value)}>
@@ -366,7 +476,7 @@ function SupplierForm({ supplierId, onSaved }) {
                   <input style={inp} value={c.primary_contact_name||''} onChange={e => setCtc(i,'primary_contact_name',e.target.value)} />
                 </div>
                 <div style={fg}>
-                  <Label text="Designation" required={i===0} />
+                  <Label text="Designation" />
                   <input style={inp} value={c.designation||''} onChange={e => setCtc(i,'designation',e.target.value)} placeholder="e.g. Accounts Manager" />
                 </div>
                 <div style={fg}>
@@ -384,7 +494,7 @@ function SupplierForm({ supplierId, onSaved }) {
                   <input style={inp} value={c.alternate_contact||''} onChange={e => setCtc(i,'alternate_contact',e.target.value)} />
                 </div>
                 <div style={fg}>
-                  <Label text="Website" required={i===0} />
+                  <Label text="Website" />
                   <input style={inp} value={c.website||''} onChange={e => setCtc(i,'website',e.target.value)} placeholder="https://example.com" />
                 </div>
               </div>
@@ -435,15 +545,16 @@ function SupplierForm({ supplierId, onSaved }) {
                   <div style={fg}>
                     <Label text="State" required={req} />
                     {stateOptions.length > 0 ? (
-                      <select style={inp} value={a.state} onChange={e => setAddr(i,'state',e.target.value)}>
+                      <select style={inp}
+                        value={stateOptions.find(s => s.parametervalues.toLowerCase() === (a.state||'').toLowerCase())?.parametervalues || a.state}
+                        onChange={e => setAddr(i,'state',e.target.value)}>
                         <option value="">Select state…</option>
                         {stateOptions.map(s => <option key={s.parameterdetid} value={s.parametervalues}>{s.parametervalues}</option>)}
                       </select>
                     ) : (
-                      <input style={a.country ? inp : inpRO}
-                        value={a.country ? a.state : ''}
-                        placeholder={a.country ? 'Enter state' : 'Select country first'}
-                        readOnly={!a.country}
+                      <input style={inp}
+                        value={a.state||''}
+                        placeholder="Enter state"
                         onChange={e => setAddr(i,'state',e.target.value)}
                       />
                     )}
@@ -507,54 +618,6 @@ function SupplierForm({ supplierId, onSaved }) {
               </div>
             </div>
           ))}
-        </div>
-      </div>
-
-      {/* ── 5. Tax & Compliance ── */}
-      <div className="card" style={{ marginBottom:16 }}>
-        <SectionHead title="Tax & Compliance" />
-        <div className="card-body">
-          <div style={row3}>
-            <div style={fg}>
-              <Label text="PAN Copy (PAN Number)" required />
-              <input style={inp} value={form.pan_number} onChange={e => setF('pan_number', e.target.value.toUpperCase())} placeholder="AAXCA1234M" maxLength={10} />
-            </div>
-            <div style={fg}>
-              <Label text="GST Certificate" required />
-              <input style={inp} value={form.gst_certificate} onChange={e => setF('gst_certificate', e.target.value)} placeholder="GST registration certificate no." />
-            </div>
-            <div style={fg}>
-              <Label text="UDYAM Registration Number" required />
-              <input style={inp} value={form.udyam_reg_number} onChange={e => setF('udyam_reg_number', e.target.value)} />
-            </div>
-          </div>
-          <div style={row3}>
-            <div style={fg}>
-              <Label text="MSME Declaration" required />
-              <input style={inp} value={form.msme_declaration} onChange={e => setF('msme_declaration', e.target.value)} placeholder="MSME declaration reference" />
-            </div>
-            <div style={fg}>
-              <Label text="Lower Deduction Certificate" />
-              <input style={inp} value={form.lower_deduction_cert} onChange={e => setF('lower_deduction_cert', e.target.value)} placeholder="Certificate no. (optional)" />
-            </div>
-            <div style={{ ...fg, justifyContent:'flex-end' }}>
-              <label style={{ fontSize:11, color:'var(--text3)', textTransform:'uppercase', letterSpacing:'0.4px', display:'block', marginBottom:4 }}>&nbsp;</label>
-              <div style={{ display:'flex', alignItems:'center', gap:8, paddingTop:6 }}>
-                <input type="checkbox" id="tds_applicable" checked={form.tds_applicable} onChange={e => setF('tds_applicable', e.target.checked)} style={{ width:14, height:14, cursor:'pointer' }} />
-                <label htmlFor="tds_applicable" style={{ fontSize:13, cursor:'pointer' }}>TDS Applicable</label>
-              </div>
-            </div>
-          </div>
-          <div style={row2}>
-            <div style={fg}>
-              <Label text="PF Registration" />
-              <input style={inp} value={form.pf_registration} onChange={e => setF('pf_registration', e.target.value)} placeholder="Mandatory if Services" />
-            </div>
-            <div style={fg}>
-              <Label text="ESIC Registration" />
-              <input style={inp} value={form.esic_registration} onChange={e => setF('esic_registration', e.target.value)} placeholder="Mandatory if Services" />
-            </div>
-          </div>
         </div>
       </div>
 
@@ -662,10 +725,56 @@ function SupplierForm({ supplierId, onSaved }) {
       {/* ── Actions ── */}
       <div style={{ display:'flex', justifyContent:'flex-end', gap:10 }}>
         <button className="btn" onClick={onSaved}>Cancel</button>
+        {formCanApprove && form.approval_status !== 'approved' && (
+          <button className="btn" style={{ color:'var(--green)', borderColor:'var(--green)' }}
+            onClick={() => { setApprovalModal({ action:'approve' }); setApprovalNotes(''); }}>
+            ✓ Approve
+          </button>
+        )}
+        {formCanApprove && form.approval_status !== 'rejected' && (
+          <button className="btn" style={{ color:'var(--red)', borderColor:'var(--red)' }}
+            onClick={() => { setApprovalModal({ action:'reject' }); setApprovalNotes(''); }}>
+            ✕ Reject
+          </button>
+        )}
         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? 'Saving…' : isEdit ? 'Update Supplier' : 'Create Supplier'}
         </button>
       </div>
+
+      {/* ── Approval Modal ── */}
+      {approvalModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000 }}>
+          <div className="card" style={{ width:440, margin:0, boxShadow:'0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div className="card-head">
+              <div className="card-title" style={{ color: approvalModal.action==='approve' ? 'var(--green)' : 'var(--red)' }}>
+                {approvalModal.action === 'approve' ? '✓ Approve Supplier' : '✕ Reject Supplier'}
+              </div>
+            </div>
+            <div className="card-body">
+              <p style={{ fontSize:13, color:'var(--text3)', marginBottom:14 }}>
+                {approvalModal.action === 'approve'
+                  ? 'Confirm approval for this supplier.'
+                  : 'Please provide a reason for rejection.'}
+              </p>
+              <label style={{ fontSize:11, color:'var(--text3)', textTransform:'uppercase', letterSpacing:'0.4px', display:'block', marginBottom:4 }}>
+                Notes {approvalModal.action === 'reject' && <span style={{ color:'#ef4444' }}>*</span>}
+              </label>
+              <textarea rows={3} style={{ width:'100%', padding:'8px 10px', border:'1px solid var(--border)', borderRadius:6, fontSize:13, resize:'vertical' }}
+                value={approvalNotes} onChange={e => setApprovalNotes(e.target.value)}
+                placeholder={approvalModal.action === 'approve' ? 'Optional notes…' : 'Reason for rejection…'} />
+            </div>
+            <div className="card-foot" style={{ display:'flex', justifyContent:'flex-end', gap:8, padding:'18px' }}>
+              <button className="btn" onClick={() => setApprovalModal(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={approvalSaving}
+                style={{ background: approvalModal.action==='approve' ? 'var(--green)' : 'var(--red)', borderColor: approvalModal.action==='approve' ? 'var(--green)' : 'var(--red)' }}
+                onClick={handleFormApproval}>
+                {approvalSaving ? 'Saving…' : approvalModal.action === 'approve' ? 'Approve' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Change Reason Modal (edit only) ── */}
       {showReasonModal && (
@@ -710,20 +819,37 @@ function SupplierForm({ supplierId, onSaved }) {
 }
 
 // ── Main list page ────────────────────────────────────────────────────────────
+const APPROVAL_TABS = [
+  { key: 'pending',  label: 'Pending'  },
+  { key: 'approved', label: 'Approved' },
+  { key: 'rejected', label: 'Rejected' },
+  { key: '',         label: 'All'      },
+];
+
 export default function SupplierMaster() {
   const location = useLocation();
+  const { user } = useAuth();
+  const isApprover = user?.role === 'approver';
+  const isAdmin    = user?.role === 'admin';
+  const canApprove = isAdmin || isApprover;
+  const canEdit    = isAdmin || isApprover;
+
   const [suppliers, setSuppliers] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [view,      setView]      = useState('list');
   const [editId,    setEditId]    = useState(null);
   const [search,    setSearch]    = useState('');
   const [filterType,     setFilterType]     = useState('');
-  const [filterApproval, setFilterApproval] = useState('');
-  const [filterStatus,   setFilterStatus]   = useState('active');
+  const [filterApproval, setFilterApproval] = useState('pending');
+  const [filterStatus,   setFilterStatus]   = useState('');
+
+  // Approve / reject modal
+  const [modal, setModal]   = useState(null); // { supplier, action }
+  const [notes, setNotes]   = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => { if (view === 'list') fetchSuppliers(); }, [view]);
 
-  // Auto-open supplier when navigated from Supplier Approvals
   useEffect(() => {
     const openId = location.state?.openSupplierId;
     if (openId) { setEditId(openId); setView('edit'); }
@@ -732,7 +858,7 @@ export default function SupplierMaster() {
   async function fetchSuppliers() {
     setLoading(true);
     try {
-      const r = await api.get('/suppliers?approved_only=true');
+      const r = await api.get('/suppliers');
       setSuppliers(r.data.suppliers);
     } catch { toast.error('Failed to load suppliers'); }
     finally { setLoading(false); }
@@ -745,6 +871,46 @@ export default function SupplierMaster() {
       fetchSuppliers();
     } catch { toast.error('Failed to update'); }
   }
+
+  async function handleDelete(s) {
+    if (!window.confirm(`Delete "${s.supplier_name}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/suppliers/${s.id}`);
+      toast.success('Supplier deleted');
+      setSuppliers(prev => prev.filter(x => x.id !== s.id));
+    } catch (err) { toast.error(err.response?.data?.error || 'Delete failed'); }
+  }
+
+  async function handleApprovalAction() {
+    if (!modal) return;
+    if (modal.action === 'reject' && !notes.trim()) return toast.error('Rejection reason is required');
+    setSaving(true);
+    try {
+      await api.post(`/suppliers/${modal.supplier.id}/approve`, { action: modal.action, notes });
+      toast.success(modal.action === 'approve' ? 'Supplier approved' : 'Supplier rejected');
+      setModal(null); setNotes('');
+      fetchSuppliers();
+    } catch (err) { toast.error(err.response?.data?.error || 'Action failed'); }
+    finally { setSaving(false); }
+  }
+
+  const counts = {
+    pending:  suppliers.filter(s => s.approval_status === 'pending').length,
+    approved: suppliers.filter(s => s.approval_status === 'approved').length,
+    rejected: suppliers.filter(s => s.approval_status === 'rejected').length,
+    '':       suppliers.length,
+  };
+
+  const displayed = suppliers.filter(s => {
+    const q = search.toLowerCase();
+    if (q && ![ s.supplier_name, s.gstin, s.pan_number, s.vendor_code ]
+      .some(v => v && v.toLowerCase().includes(q))) return false;
+    if (filterType && (s.supplier_type || '').toUpperCase() !== filterType) return false;
+    if (filterApproval !== '' && s.approval_status !== filterApproval) return false;
+    if (filterStatus === 'active'   && !s.is_active) return false;
+    if (filterStatus === 'inactive' &&  s.is_active) return false;
+    return true;
+  });
 
   if (view !== 'list') return (
     <Layout>
@@ -761,62 +927,66 @@ export default function SupplierMaster() {
   return (
     <Layout>
       <div style={{ padding:28 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24 }}>
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
           <div>
-            <h1 style={{ fontSize:22, fontWeight:600, marginBottom:2 }}>Supplier Master</h1>
+            <h1 style={{ fontSize:22, fontWeight:600, marginBottom:2 }}>Suppliers</h1>
             <div style={{ color:'var(--text3)', fontSize:13 }}>
-              {suppliers.filter(s => s.is_active).length} active · {suppliers.length} total
+              {counts.pending} pending · {counts.approved} approved · {counts.rejected} rejected
             </div>
           </div>
-          <button className="btn btn-primary" onClick={() => setView('new')}>+ New Supplier</button>
+          {canEdit && (
+            <button className="btn btn-primary" onClick={() => setView('new')}>+ New Supplier</button>
+          )}
+        </div>
+
+        {/* Approval status tabs */}
+        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+          {APPROVAL_TABS.map(t => (
+            <button key={t.key} onClick={() => setFilterApproval(t.key)}
+              style={{ padding:'6px 16px', borderRadius:20, fontSize:13, cursor:'pointer', fontFamily:'inherit',
+                border: filterApproval === t.key ? '1.5px solid var(--primary)' : '1.5px solid var(--border)',
+                background: filterApproval === t.key ? 'var(--primary)' : 'transparent',
+                color: filterApproval === t.key ? '#fff' : 'var(--text2)',
+                fontWeight: filterApproval === t.key ? 600 : 400 }}>
+              {t.label} <span style={{ fontSize:11, opacity:0.75 }}>({counts[t.key]})</span>
+            </button>
+          ))}
         </div>
 
         {/* Filter bar */}
-        <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap', alignItems:'center', width:'40%' }}>
           <input
             placeholder="Search name, GST, PAN, vendor code…"
             value={search} onChange={e => setSearch(e.target.value)}
-            style={{ flex:1, minWidth:220, padding:'7px 12px', border:'1px solid var(--border)',
+            style={{ flex:'1 1 200px', minWidth:180, padding:'7px 12px', border:'1px solid var(--border)',
               borderRadius:8, fontSize:13, background:'var(--bg)', color:'var(--text)' }}
           />
           <select value={filterType} onChange={e => setFilterType(e.target.value)}
-            style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13,
-              background:'var(--bg)', color:'var(--text)' }}>
+            style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13, background:'var(--bg)', color:'var(--text)' }}>
             <option value="">All Types</option>
             <option value="RESELLER">Reseller</option>
             <option value="DISTRIBUTOR">Distributor</option>
             <option value="OEM">OEM</option>
           </select>
-          <select value={filterApproval} onChange={e => setFilterApproval(e.target.value)}
-            style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13,
-              background:'var(--bg)', color:'var(--text)' }}>
-            <option value="">All Approvals</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
           <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-            style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13,
-              background:'var(--bg)', color:'var(--text)' }}>
+            style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13, background:'var(--bg)', color:'var(--text)' }}>
+            <option value="">All Status</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
-            <option value="">All</option>
           </select>
-          {(search || filterType || filterApproval || filterStatus) && (
-            <button className="btn btn-sm" onClick={() => { setSearch(''); setFilterType(''); setFilterApproval(''); setFilterStatus('active'); }}>
-              Clear
-            </button>
+          {(search || filterType || filterStatus) && (
+            <button className="btn btn-sm" onClick={() => { setSearch(''); setFilterType(''); setFilterStatus(''); }}>Clear</button>
           )}
         </div>
 
         <div className="card">
           {loading ? (
             <div style={{ padding:40, textAlign:'center', color:'var(--text3)' }}>Loading…</div>
-          ) : suppliers.length === 0 ? (
+          ) : displayed.length === 0 ? (
             <div style={{ padding:60, textAlign:'center', color:'var(--text3)' }}>
               <div style={{ fontSize:32, marginBottom:12 }}>🏢</div>
-              <div style={{ fontWeight:500, marginBottom:6 }}>No suppliers yet</div>
-              <div style={{ fontSize:13 }}>Add your first supplier to get started</div>
+              <div style={{ fontWeight:500, marginBottom:6 }}>No suppliers found</div>
             </div>
           ) : (
             <div className="table-wrap">
@@ -825,52 +995,71 @@ export default function SupplierMaster() {
                   <tr>
                     <th>Vendor Code</th>
                     <th>Supplier Name</th>
-                    <th>Trade Name</th>
                     <th>Type</th>
                     <th>GST Number</th>
-                    <th>PAN</th>
-                    <th>Owned By</th>
-                    <th>Status</th>
                     <th>Approval</th>
+                    <th>Notes / Reason</th>
+                    <th>Approved By</th>
+                    <th>Active</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliers.filter(s => {
-                    const q = search.toLowerCase();
-                    if (q && ![ s.supplier_name, s.gstin, s.pan_number, s.vendor_code ]
-                      .some(v => v && v.toLowerCase().includes(q))) return false;
-                    if (filterType && (s.supplier_type || '').toUpperCase() !== filterType) return false;
-                    if (filterApproval && s.approval_status !== filterApproval) return false;
-                    if (filterStatus === 'active'   && !s.is_active) return false;
-                    if (filterStatus === 'inactive' &&  s.is_active) return false;
-                    return true;
-                  }).map(s => (
+                  {displayed.map(s => (
                     <tr key={s.id}>
                       <td><span className="mono" style={{ fontSize:12 }}>{s.vendor_code||'—'}</span></td>
                       <td style={{ fontWeight:500 }}>{s.supplier_name}</td>
-                      <td style={{ color:'var(--text3)' }}>{s.trade_name||'—'}</td>
                       <td>{s.supplier_type_label||'—'}</td>
                       <td className="mono">{s.gstin||'—'}</td>
-                      <td className="mono">{s.pan_number||'—'}</td>
-                      <td>{s.owned_by_name||'—'}</td>
+                      <td>
+                        {s.approval_status === 'approved' && <span className="badge badge-approved">Approved</span>}
+                        {s.approval_status === 'rejected' && <span className="badge badge-rejected">Rejected</span>}
+                        {(!s.approval_status || s.approval_status === 'pending') && <span className="badge badge-pending">Pending</span>}
+                      </td>
+                      <td style={{ fontSize:12, color: s.approval_status === 'rejected' ? 'var(--red)' : 'var(--text3)', maxWidth:180 }}>
+                        {s.approval_notes || '—'}
+                      </td>
+                      <td style={{ color:'var(--text3)', fontSize:12 }}>{s.approved_by_name||'—'}</td>
                       <td>
                         <span className={`badge ${s.is_active ? 'badge-approved' : 'badge-rejected'}`}>
                           {s.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
                       <td>
-                        {s.approval_status === 'approved' && <span className="badge badge-approved">Approved</span>}
-                        {s.approval_status === 'rejected' && <span className="badge badge-rejected">Rejected</span>}
-                        {(!s.approval_status || s.approval_status === 'pending') && <span className="badge badge-pending">Pending</span>}
-                      </td>
-                      <td>
-                        <div style={{ display:'flex', gap:6 }}>
-                          <button className="btn btn-sm" onClick={() => { setEditId(s.id); setView('edit'); }}>Edit</button>
-                          <button className="btn btn-sm" style={{ color: s.is_active ? 'var(--red)' : 'var(--green)' }}
-                            onClick={() => handleToggle(s)}>
-                            {s.is_active ? 'Deactivate' : 'Activate'}
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                          <button className="btn btn-sm" onClick={() => { setEditId(s.id); setView('edit'); }}>Edit
+                            {/* {canEdit ? 'Edit' : 'View'} */}
                           </button>
+                          {/* {canEdit && (
+                            <button className="btn btn-sm" style={{ color: s.is_active ? 'var(--red)' : 'var(--green)' }}
+                              onClick={() => handleToggle(s)}>
+                              {s.is_active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          )} */}
+                          {canApprove && s.approval_status === 'pending' && (
+                            <>
+                              <button className="btn btn-sm" style={{ color:'var(--green)' }}
+                                onClick={() => { setModal({ supplier:s, action:'approve' }); setNotes(''); }}>
+                                Approve
+                              </button>
+                              <button className="btn btn-sm" style={{ color:'var(--red)' }}
+                                onClick={() => { setModal({ supplier:s, action:'reject' }); setNotes(''); }}>
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {canApprove && s.approval_status !== 'pending' && (
+                            <button className="btn btn-sm"
+                              onClick={() => { setModal({ supplier:s, action:'approve' }); setNotes(''); }}>
+                              Re-approve
+                            </button>
+                          )}
+                          {isAdmin && (
+                            <button className="btn btn-sm" style={{ color:'var(--red)' }}
+                              onClick={() => handleDelete(s)}>
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -881,6 +1070,43 @@ export default function SupplierMaster() {
           )}
         </div>
       </div>
+
+      {/* Approve / Reject Modal */}
+      {modal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000 }}>
+          <div className="card" style={{ width:440, margin:0, boxShadow:'0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div className="card-head">
+              <div className="card-title" style={{ color: modal.action==='approve' ? 'var(--green)' : 'var(--red)' }}>
+                {modal.action === 'approve' ? '✓ Approve Supplier' : '✕ Reject Supplier'}
+              </div>
+            </div>
+            <div className="card-body">
+              <div style={{ marginBottom:16 }}>
+                <div style={{ fontWeight:500 }}>{modal.supplier.supplier_name}</div>
+                <div style={{ fontSize:12, color:'var(--text3)', marginTop:2 }}>
+                  {modal.supplier.vendor_code} · {modal.supplier.gstin||'No GST'}
+                </div>
+              </div>
+              <div style={{ marginBottom:16 }}>
+                <label style={{ fontSize:11, color:'var(--text3)', textTransform:'uppercase', letterSpacing:'0.4px', display:'block', marginBottom:4 }}>
+                  {modal.action === 'reject' ? 'Rejection Reason *' : 'Notes (optional)'}
+                </label>
+                <textarea style={{ ...inp, minHeight:80, resize:'vertical' }}
+                  value={notes} onChange={e => setNotes(e.target.value)}
+                  placeholder={modal.action === 'reject' ? 'Reason for rejection…' : 'Any notes…'} />
+              </div>
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+                <button className="btn" onClick={() => setModal(null)}>Cancel</button>
+                <button className="btn btn-primary" disabled={saving}
+                  style={{ background: modal.action==='approve' ? 'var(--green)' : 'var(--red)', borderColor: modal.action==='approve' ? 'var(--green)' : 'var(--red)' }}
+                  onClick={handleApprovalAction}>
+                  {saving ? 'Saving…' : modal.action === 'approve' ? 'Approve' : 'Reject'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

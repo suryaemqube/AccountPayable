@@ -12,6 +12,7 @@ const bankImportCtrl     = require('../controllers/bankImport');
 const supplierImportCtrl = require('../controllers/supplierImport');
 const salesproProxy = require('../controllers/salesproProxy');
 const paramCtrl          = require('../controllers/parameters');
+const billCtrl           = require('../controllers/bills');
 const { sendDueReminders } = require('../utils/dueDateReminder');
 
 const router = express.Router();
@@ -28,21 +29,20 @@ router.put('/managers/:id', auth, requireRole('admin'), managerCtrl.updateManage
 router.delete('/managers/:id', auth, requireRole('admin'), managerCtrl.deleteManager);
 
 // Suppliers — admin + executive (executive needs supplier list when editing/uploading vouchers)
-router.get('/suppliers', auth, requireRole('admin', 'executive', 'approver'), supplierCtrl.listSuppliers);
+router.get('/suppliers', auth, requireRole('admin', 'executive', 'approver', 'manager'), supplierCtrl.listSuppliers);
 router.post('/suppliers', auth, requireRole('admin'), supplierCtrl.createSupplier);
-router.get('/suppliers/:id', auth, requireRole('admin', 'executive', 'approver'), supplierCtrl.getSupplier);
-router.put('/suppliers/:id', auth, requireRole('admin'), supplierCtrl.updateSupplier);
+router.get('/suppliers/:id', auth, requireRole('admin', 'executive', 'approver', 'manager'), supplierCtrl.getSupplier);
+router.put('/suppliers/:id', auth, requireRole('admin', 'approver'), supplierCtrl.updateSupplier);
 router.delete('/suppliers/:id', auth, requireRole('admin'), supplierCtrl.deleteSupplier);
-// Supplier approval (approver role only)
-router.post('/suppliers/:id/approve', auth, requireRole('approver'), supplierCtrl.approveSupplier);
+// Supplier approval
+router.post('/suppliers/:id/approve', auth, requireRole('admin', 'approver'), supplierCtrl.approveSupplier);
 // Supplier documents
-router.post('/suppliers/:id/documents', auth, requireRole('admin'), upload.single('file'), supplierCtrl.uploadDocument);
-router.get('/suppliers/:id/documents/:did', auth, requireRole('admin', 'executive', 'approver'), supplierCtrl.getDocumentFile);
-router.delete('/suppliers/:id/documents/:did', auth, requireRole('admin'), supplierCtrl.deleteDocument);
+router.post('/suppliers/:id/documents', auth, requireRole('admin', 'approver'), upload.single('file'), supplierCtrl.uploadDocument);
+router.get('/suppliers/:id/documents/:did', auth, requireRole('admin', 'executive', 'approver', 'manager'), supplierCtrl.getDocumentFile);
+router.delete('/suppliers/:id/documents/:did', auth, requireRole('admin', 'approver'), supplierCtrl.deleteDocument);
 
 // Vouchers
 router.post('/vouchers/upload', auth, requireRole('admin', 'executive'), upload.single('invoice'), voucherCtrl.uploadAndScan);
-router.post('/vouchers/create-balance', auth, requireRole('admin', 'executive'), voucherCtrl.createBalanceVoucher);
 router.post('/vouchers', auth, requireRole('admin', 'executive'), voucherCtrl.createVoucher);
 router.get('/vouchers', auth, voucherCtrl.listVouchers);
 router.get('/vouchers/:id', auth, voucherCtrl.getVoucher);
@@ -56,7 +56,7 @@ router.post('/vouchers/:id/reopen',         auth, requireRole('admin'), voucherC
 router.post('/vouchers/:id/comments', auth, voucherCtrl.addComment);
 router.post('/vouchers/:id/generate', auth, requireRole('admin', 'executive'), voucherCtrl.generateVoucher);
 router.post('/vouchers/:id/utr',      auth, requireRole('admin', 'executive'), voucherCtrl.updateUtr);
-router.post('/vouchers/:id/sync-payment-status', auth, requireRole('admin'), voucherCtrl.syncPaymentStatus);
+router.post('/vouchers/:id/sync-payment-status', auth, requireRole('admin', 'executive', 'approver', 'manager'), voucherCtrl.syncPaymentStatus);
 router.post('/vouchers/export', auth, requireRole('admin', 'executive'), voucherCtrl.exportVouchers);
 router.get('/vouchers/:id/email-preview', auth, requireRole('admin', 'executive'), voucherCtrl.emailPreview);
 router.post('/vouchers/:id/send-payment-advice', auth, requireRole('admin', 'executive'), voucherCtrl.sendAdviceEmail);
@@ -66,6 +66,18 @@ router.get('/vouchers/:id/invoice', auth, voucherCtrl.getInvoiceFile);
 router.post('/vouchers/:id/attachments', auth, upload.array('files', 10), voucherCtrl.uploadAttachments);
 router.get('/vouchers/:id/attachments/:aid', auth, voucherCtrl.getAttachmentFile);
 router.delete('/vouchers/:id/attachments/:aid', auth, requireRole('admin'), voucherCtrl.deleteAttachment);
+
+// Bills
+router.get('/bills',              auth, requireRole('admin', 'executive', 'approver'), billCtrl.listBills);
+router.post('/bills',             auth, requireRole('admin', 'executive'), billCtrl.createBill);
+router.get('/bills/:id',          auth, requireRole('admin', 'executive', 'approver'), billCtrl.getBill);
+router.put('/bills/:id',          auth, requireRole('admin', 'executive'), billCtrl.updateBill);
+router.delete('/bills/:id',       auth, requireRole('admin'), billCtrl.deleteBill);
+router.post('/bills/:id/voucher',      auth, requireRole('admin', 'executive'), billCtrl.createVoucherFromBill);
+router.post('/bills/:id/attachments',      auth, requireRole('admin', 'executive'), upload.array('files', 10), billCtrl.uploadBillAttachments);
+router.get('/bills/:id/attachments',         auth, requireRole('admin', 'executive', 'approver', 'manager'), billCtrl.getBillAttachments);
+router.get('/bills/:id/attachments/:aid',    auth, requireRole('admin', 'executive', 'approver', 'manager'), billCtrl.getBillAttachmentFile);
+router.delete('/bills/:id/attachments/:aid', auth, requireRole('admin', 'executive'), billCtrl.deleteBillAttachment);
 
 // Company details (admin only)
 router.get('/company', auth, requireRole('admin'), companyCtrl.listCompanies);

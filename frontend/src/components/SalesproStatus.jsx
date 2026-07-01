@@ -6,7 +6,7 @@
 
 import { useState, useRef } from 'react';
 import api from '../api/client';
-import { fmt } from './Helpers';
+import { fmt, PaymentBadge } from './Helpers';
 import toast from 'react-hot-toast';
 
 // ─────────────────────────────────────────────────────────────────
@@ -258,7 +258,7 @@ export function normaliseInstall(rows) {
 //    voucherId       (string|null)  — AP voucher id for payment_status sync
 //    onStatusSynced  (fn|null)      — called with new status string after sync
 // ─────────────────────────────────────────────────────────────────
-export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStatusSynced, editing }) {
+export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStatusSynced, editing, paymentStatus }) {
   // ── auto mode state (payment_reference exists) ──
   const [autoPayRows,    setAutoPayRows]    = useState(null);   // null=not loaded
   const [autoInstRows,   setAutoInstRows]   = useState(null);
@@ -409,7 +409,15 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
   return (
     <div className="card" style={{ marginBottom: 16, overflow:'visible' }}>
       <div className="card-head">
-        <div className="card-title">🔗 SalesPro Status</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="card-title">🔗 SalesPro Status</div>
+          {paymentStatus && <PaymentBadge status={paymentStatus} />}
+          {/* {paymentStatus === 'pending_verification' && (
+            <span style={{ fontSize: 11, color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 99, padding: '1px 8px' }}>
+              Please check status in SalesPro
+            </span>
+          )} */}
+        </div>
         {isAuto && !autoLoaded && (
           <button className="btn btn-sm btn-primary" onClick={loadAuto} disabled={autoLoading}>
             {autoLoading ? 'Loading…' : '↻ Load from SalesPro'}

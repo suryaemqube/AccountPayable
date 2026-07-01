@@ -67,9 +67,10 @@ a { text-decoration: none; color: inherit; }
 .badge-downloaded{ background: var(--purple-l); color: var(--purple); }
 .badge-export    { background: #dbeafe; color: #1d4ed8; }
 .badge-proceed  { background: #ede9fe; color: #6d28d9; }
-.badge-paid      { background: var(--green-l); color: var(--green); }
-.badge-unpaid    { background: var(--red-l); color: var(--red); }
-.badge-partial   { background: var(--amber-l); color: var(--amber); }
+.badge-paid                 { background: var(--green-l); color: var(--green); }
+.badge-unpaid               { background: var(--red-l); color: var(--red); }
+.badge-partial              { background: var(--amber-l); color: var(--amber); }
+.badge-pending_verification { background: #f3f4f6; color: #6b7280; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .card-head { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }

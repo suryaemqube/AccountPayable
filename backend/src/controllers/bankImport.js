@@ -51,7 +51,7 @@ async function parseBankFile(req, res) {
        FROM vouchers v
        LEFT JOIN parameter_details pds ON pds.parameterdetid = v.status_det_id
        LEFT JOIN suppliers s ON s.id = v.supplier_id
-       WHERE pds.code IN ('proceed', 'ready_for_bank')
+       WHERE pds.code IN ('exported', 'reviewed')
        ORDER BY v.created_at DESC`
     );
 

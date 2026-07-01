@@ -56,7 +56,20 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
   const fmtAmt = (n) =>
     Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  const amount = fmtAmt(voucher.total_amount);
+  // For bill-based vouchers, financial data comes from bill_ prefixed fields
+  const taxable    = Number(voucher.bill_taxable_amount ?? voucher.taxable_amount) || 0;
+  const cgst       = Number(voucher.bill_cgst           ?? voucher.cgst)           || 0;
+  const sgst       = Number(voucher.bill_sgst           ?? voucher.sgst)           || 0;
+  const igst       = Number(voucher.bill_igst           ?? voucher.igst)           || 0;
+  const tds        = Number(voucher.bill_tds_amount     ?? voucher.tds_amount)     || 0;
+  const grossTotal = taxable + cgst + sgst + igst;
+  // amountToPay = this voucher's payment amount
+  const amountToPay = Number(voucher.amount) || (grossTotal - tds);
+  const netPayable  = grossTotal - tds;
+  const billAllocated = Number(voucher.bill_allocated_amount) || amountToPay;
+  const balanceRemaining = Math.max(netPayable - billAllocated, 0);
+
+  const amount = fmtAmt(amountToPay);
 
   const bankDisplay = companyBank?.account_number
     ? `${companyBank.bank_name ? companyBank.bank_name + ' ' : ''}A/C xx${String(companyBank.account_number).slice(-4)}`
@@ -76,10 +89,10 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
         </tr>`
       : '';
 
-  const billRow = (label, value, bold = false, last = false) =>
-    `<tr>
-      <td style="padding:12px 16px;color:#9ca3af;font-size:13px;${last ? '' : 'border-bottom:1px solid #e5e7eb;'}">${label}</td>
-      <td style="padding:12px 16px;text-align:right;font-size:13px;${bold ? 'font-weight:700;' : ''}${last ? '' : 'border-bottom:1px solid #e5e7eb;'}">${value}</td>
+  const billRow = (label, value, bold = false, last = false, color = '') =>
+    `<tr${color ? ` style="background:${color}10;"` : ''}>
+      <td style="padding:12px 16px;color:${color || '#9ca3af'};font-size:13px;${last ? '' : 'border-bottom:1px solid #e5e7eb;'}">${label}</td>
+      <td style="padding:12px 16px;text-align:right;font-size:13px;${bold ? 'font-weight:700;' : ''}${color ? `color:${color};` : ''}${last ? '' : 'border-bottom:1px solid #e5e7eb;'}">${value}</td>
     </tr>`;
 
   return `<!DOCTYPE html>
@@ -123,12 +136,20 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
   <div style="margin:0 32px 32px;">
     <h3 style="font-size:15px;font-weight:700;margin:0 0 12px;color:#111827;">Bill Details</h3>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
-      ${voucher.payment_reference ? billRow('Bill ID', voucher.payment_reference) : ''}
+      <!-- ${voucher.payment_reference ? billRow('Bill ID', voucher.payment_reference) : ''} -->
       ${voucher.narration ? billRow('Bill Narration', voucher.narration) : ''}
-      ${billRow('Invoice Date', voucher.invoice_date ? new Date(voucher.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—')}
-      ${billRow('Gross Amount (Incl GST)', '₹' + amount, true)}
-      ${Number(voucher.balance_amount) > 0 ? billRow('Balance (Held Back)', '− ₹' + fmtAmt(voucher.balance_amount)) : ''}
-      ${billRow('Paid Amount', '₹' + fmtAmt((Number(voucher.total_amount) || 0) - (Number(voucher.balance_amount) || 0)), true, true)}
+      ${billRow('Invoice Date', (voucher.bill_invoice_date || voucher.invoice_date) ? new Date(voucher.bill_invoice_date || voucher.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—')}
+      ${billRow('Taxable Amount', '₹' + fmtAmt(taxable))}
+      ${cgst > 0 ? billRow('CGST', '₹' + fmtAmt(cgst)) : ''}
+      ${sgst > 0 ? billRow('SGST', '₹' + fmtAmt(sgst)) : ''}
+      ${igst > 0 ? billRow('IGST', '₹' + fmtAmt(igst)) : ''}
+      ${billRow('Gross Total', '₹' + fmtAmt(grossTotal), true)}
+      ${tds > 0 ? billRow('TDS Deducted', '− ₹' + fmtAmt(tds)) : ''}
+      ${tds > 0 ? billRow('Net Payable', '₹' + fmtAmt(netPayable), true) : ''}
+      ${billRow('This Payment', '₹' + fmtAmt(amountToPay), true)}
+      ${balanceRemaining > 0.01
+        ? billRow('Balance Remaining', '₹' + fmtAmt(balanceRemaining), true, true, '#d97706')
+        : billRow('Status', '✓ Fully Paid', true, true, '#16a34a')}
     </table>
   </div>
 
@@ -201,11 +222,11 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
       </tr>
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;border-bottom:1px solid #f3f4f6;">Bill Ref No.</td>
-        <td style="padding:12px 20px;font-size:13px;text-align:right;border-bottom:1px solid #f3f4f6;">${voucher.bill_ref_no || voucher.payment_reference || '—'}</td>
+        <td style="padding:12px 20px;font-size:13px;text-align:right;border-bottom:1px solid #f3f4f6;">${voucher.bill_ref_no || voucher.bill_payment_reference || '—'}</td>
       </tr>
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;border-bottom:1px solid #f3f4f6;">Amount</td>
-        <td style="padding:12px 20px;font-size:13px;font-weight:700;text-align:right;border-bottom:1px solid #f3f4f6;">₹${fmtAmt(voucher.total_amount)}</td>
+        <td style="padding:12px 20px;font-size:13px;font-weight:700;text-align:right;border-bottom:1px solid #f3f4f6;">₹${fmtAmt(voucher.amount || voucher.bill_total_amount)}</td>
       </tr>
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;">Due Date</td>
