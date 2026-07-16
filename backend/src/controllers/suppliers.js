@@ -2,6 +2,7 @@ const path = require('path');
 const fs   = require('fs');
 const pool = require('../config/db');
 const paramCache = require('../utils/parameterCache');
+const { notify } = require('../utils/notify');
 
 async function listSuppliers(req, res) {
   try {
@@ -43,9 +44,9 @@ async function getSupplier(req, res) {
 
 async function createSupplier(req, res) {
   const {
-    supplier_name, trade_name, supplier_type, gstin, pan_number,
-    cin_number, msme_reg_number, udyam_reg_number, pf_registration, esic_registration,
-    tds_applicable, gst_certificate, lower_deduction_cert, msme_declaration,
+    supplier_name, trade_name, name_for_bank, supplier_type, gstin, pan_number,
+    cin_number, udyam_reg_number, pf_registration, esic_registration,
+    tds_applicable, gst_certificate, lower_deduction_cert,
     products_services, territory,
     owned_by, is_active,
     banks = [], contacts = [], addresses = [],
@@ -67,18 +68,18 @@ async function createSupplier(req, res) {
 
     const sResult = await client.query(
       `INSERT INTO suppliers (
-         supplier_name, trade_name, vendor_code, supplier_type_det_id,
-         gstin, pan_number, cin_number, msme_reg_number, udyam_reg_number,
+         supplier_name, trade_name, name_for_bank, vendor_code, supplier_type_det_id,
+         gstin, pan_number, cin_number, udyam_reg_number,
          pf_registration, esic_registration, tds_applicable,
-         gst_certificate, lower_deduction_cert, msme_declaration,
+         gst_certificate, lower_deduction_cert,
          products_services, territory, owned_by, is_active, created_by, approval_status, approval_notes
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
       [
-        supplier_name, trade_name || null, vendor_code, supplier_type_det_id,
-        gstin || null, pan_number || null, cin_number || null, msme_reg_number || null,
+        supplier_name, trade_name || null, name_for_bank || null, vendor_code, supplier_type_det_id,
+        gstin || null, pan_number || null, cin_number || null,
         udyam_reg_number || null, pf_registration || null, esic_registration || null,
         tds_applicable || false,
-        gst_certificate || null, lower_deduction_cert || null, msme_declaration || null,
+        gst_certificate || null, lower_deduction_cert || null,
         products_services || null, territory || null,
         owned_by || null, is_active !== false, req.user.id, 'pending',
         approval_notes || 'New',
@@ -120,6 +121,11 @@ async function createSupplier(req, res) {
 
     await client.query('COMMIT');
     const full = await getSupplierData(suppId);
+    notify({
+      type: 'supplier_pending',
+      message: `New supplier "${supplier_name}" added by ${req.user.name} — pending approval`,
+      entity_type: 'supplier', entity_id: suppId, created_by: req.user.id,
+    });
     res.status(201).json(full);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -133,9 +139,9 @@ async function createSupplier(req, res) {
 async function updateSupplier(req, res) {
   const { id } = req.params;
   const {
-    supplier_name, trade_name, supplier_type, gstin, pan_number,
-    cin_number, msme_reg_number, udyam_reg_number, pf_registration, esic_registration,
-    tds_applicable, gst_certificate, lower_deduction_cert, msme_declaration,
+    supplier_name, trade_name, name_for_bank, supplier_type, gstin, pan_number,
+    cin_number, udyam_reg_number, pf_registration, esic_registration,
+    tds_applicable, gst_certificate, lower_deduction_cert,
     products_services, territory,
     owned_by, is_active, approval_notes,
     banks, contacts, addresses,
@@ -153,35 +159,34 @@ async function updateSupplier(req, res) {
       `UPDATE suppliers SET
          supplier_name        = COALESCE($1,  supplier_name),
          trade_name           = COALESCE($2,  trade_name),
-         supplier_type_det_id = COALESCE($3,  supplier_type_det_id),
-         gstin                = COALESCE($4,  gstin),
-         pan_number           = COALESCE($5,  pan_number),
-         cin_number           = COALESCE($6,  cin_number),
-         msme_reg_number      = COALESCE($7,  msme_reg_number),
+         name_for_bank        = COALESCE($3,  name_for_bank),
+         supplier_type_det_id = COALESCE($4,  supplier_type_det_id),
+         gstin                = COALESCE($5,  gstin),
+         pan_number           = COALESCE($6,  pan_number),
+         cin_number           = COALESCE($7,  cin_number),
          udyam_reg_number     = COALESCE($8,  udyam_reg_number),
          pf_registration      = COALESCE($9,  pf_registration),
          esic_registration    = COALESCE($10, esic_registration),
          tds_applicable       = COALESCE($11, tds_applicable),
          gst_certificate      = COALESCE($12, gst_certificate),
          lower_deduction_cert = COALESCE($13, lower_deduction_cert),
-         msme_declaration     = COALESCE($14, msme_declaration),
-         products_services    = COALESCE($15, products_services),
-         territory            = COALESCE($16, territory),
-         owned_by             = COALESCE($17, owned_by),
-         is_active            = COALESCE($18, is_active),
-         approval_status      = CASE WHEN $21 THEN approval_status ELSE 'pending' END,
-         approved_by          = CASE WHEN $21 THEN approved_by    ELSE NULL      END,
-         last_approved_at     = CASE WHEN $21 THEN last_approved_at ELSE NULL    END,
-         approval_notes       = COALESCE($19, approval_notes),
+         products_services    = COALESCE($14, products_services),
+         territory            = COALESCE($15, territory),
+         owned_by             = COALESCE($16, owned_by),
+         is_active            = COALESCE($17, is_active),
+         approval_status      = CASE WHEN $20 THEN approval_status ELSE 'pending' END,
+         approved_by          = CASE WHEN $20 THEN approved_by    ELSE NULL      END,
+         last_approved_at     = CASE WHEN $20 THEN last_approved_at ELSE NULL    END,
+         approval_notes       = COALESCE($18, approval_notes),
          updated_at           = NOW()
-       WHERE id = $20`,
+       WHERE id = $19`,
       [
-        supplier_name, trade_name, supplier_type_det_id ?? null,
-        gstin, pan_number, cin_number, msme_reg_number, udyam_reg_number,
+        supplier_name, trade_name, name_for_bank ?? null, supplier_type_det_id ?? null,
+        gstin, pan_number, cin_number, udyam_reg_number,
         pf_registration, esic_registration, tds_applicable,
-        gst_certificate, lower_deduction_cert, msme_declaration,
+        gst_certificate, lower_deduction_cert,
         products_services, territory, owned_by, is_active, approval_notes || null, id,
-        req.user.role === 'admin',  // $21: skip approval reset for admin
+        req.user.role === 'admin',  // $20: skip approval reset for admin
       ]
     );
 
@@ -254,10 +259,10 @@ async function deleteSupplier(req, res) {
 
 async function getSupplierData(id) {
   const s = await pool.query(`
-    SELECT s.id, s.supplier_name, s.trade_name, s.vendor_code,
-           s.gstin, s.pan_number, s.cin_number, s.msme_reg_number, s.udyam_reg_number,
+    SELECT s.id, s.supplier_name, s.trade_name, s.name_for_bank, s.vendor_code,
+           s.gstin, s.pan_number, s.cin_number, s.udyam_reg_number,
            s.pf_registration, s.esic_registration, s.tds_applicable,
-           s.gst_certificate, s.lower_deduction_cert, s.msme_declaration,
+           s.gst_certificate, s.lower_deduction_cert,
            s.products_services, s.territory,
            s.owned_by, s.is_active, s.created_at, s.updated_at, s.created_by,
            s.approval_status, s.approved_by, s.last_approved_at, s.approval_notes,

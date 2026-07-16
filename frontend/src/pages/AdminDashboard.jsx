@@ -120,9 +120,9 @@ export default function AdminDashboard() {
                   <tr>
                     <th>Supplier</th>
                     <th>Bill Ref</th>
-                    <th>Invoice Date</th>
+                    <th>Bill Date</th>
                     <th style={{ textAlign: 'right' }}>Amount</th>
-                    <th>Payment</th>
+                    {/* <th>Payment (SalesPro)</th> */}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -131,9 +131,9 @@ export default function AdminDashboard() {
                     <tr key={v.id} style={{ cursor: 'pointer' }} onClick={() => nav(`/admin/vouchers/${v.id}`)}>
                       <td style={{ fontWeight: 500 }}>{v.supplier_name || '—'}</td>
                       <td><span className="mono" style={{ fontSize: 12 }}>{v.bill_ref_no || v.payment_reference || '—'}</span></td>
-                      <td>{fmtDate(v.invoice_date)}</td>
-                      <td style={{ textAlign: 'right' }}><span className="mono">{fmt(v.total_amount)}</span></td>
-                      <td><PaymentBadge status={v.payment_status} /></td>
+                      <td>{fmtDate(v.bill_invoice_date)}</td>
+                      <td style={{ textAlign: 'right' }}><span className="mono">{fmt(v.amount || v.total_amount)}</span></td>
+                      {/* <td><PaymentBadge status={v.payment_status} /></td> */}
                       <td><StatusBadge status={v.status} /></td>
                     </tr>
                   ))}

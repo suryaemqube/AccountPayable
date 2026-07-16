@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -14,7 +14,11 @@ export default function Login() {
     setLoading(true);
     try {
       const user = await login(form.email, form.password);
-      nav(user.role === 'admin' ? '/admin' : '/manager');
+      const dest = user.role === 'admin' ? '/admin'
+                 : user.role === 'executive' ? '/executive'
+                 : user.role === 'approver'  ? '/approver'
+                 : '/manager';
+      nav(dest);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Login failed');
     } finally {
@@ -53,14 +57,19 @@ export default function Login() {
                   placeholder="••••••••"
                 />
               </div>
+              <div style={{ textAlign: 'right', marginBottom: 4 }}>
+                <Link to="/forgot-password" style={{ fontSize: 12, color: 'var(--primary)', textDecoration: 'none' }}>
+                  Forgot password?
+                </Link>
+              </div>
               <button className="btn btn-primary" type="submit" disabled={loading}
                 style={{ width: '100%', justifyContent: 'center', marginTop: 4 }}>
                 {loading ? 'Signing in…' : 'Sign in'}
               </button>
             </form>
-            <div style={{ marginTop: 16, padding: 10, background: 'var(--surface2)', borderRadius: 8, fontSize: 12, color: 'var(--text3)' }}>
+            {/* <div style={{ marginTop: 16, padding: 10, background: 'var(--surface2)', borderRadius: 8, fontSize: 12, color: 'var(--text3)' }}>
               Default admin: <strong>payable@swansol.com</strong> / <strong>admin123</strong>
-            </div>
+            </div> */}
           </div>
         </div>
       </div>

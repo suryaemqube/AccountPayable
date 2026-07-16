@@ -2,12 +2,13 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
-import { StatusBadge, PaymentBadge, fmt, fmtDate, fmtDateTime } from '../components/Helpers';
+import { StatusBadge, PaymentBadge, fmt, fmtDate, fmtDateTime, isAndroid } from '../components/Helpers';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { SalesproStatusCard } from '../components/SalesproStatus';
 import EmailModal from '../components/EmailModal';
 import { VS } from '../constants/voucherStatus';
+import { validateAttachmentFiles, ALLOWED_ATTACHMENT_EXTENSIONS, MAX_ATTACHMENT_SIZE_MB } from '../constants/upload';
 
 function FileIcon({ mime }) {
   if (!mime) return '📎';
@@ -29,6 +30,7 @@ export default function VoucherDetail() {
   const [suppliers, setSuppliers] = useState([]);
   const [comment, setComment]     = useState('');
   const [assignTo, setAssignTo]   = useState('');
+  const [assigning, setAssigning] = useState(false);
   const [rejectReason, setRejectReason]           = useState('');
   const [showReject, setShowReject]               = useState(false);
   const [showFinalReject, setShowFinalReject]     = useState(false);
@@ -37,6 +39,8 @@ export default function VoucherDetail() {
   const [savingUtr, setSavingUtr]                 = useState(false);
   const [showUtrModal, setShowUtrModal]           = useState(false);
   const [saving, setSaving]       = useState(false);
+  const [deleting, setDeleting]   = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const [viewer, setViewer]       = useState(null); // { url, mimeType, name }
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -96,7 +100,7 @@ export default function VoucherDetail() {
   async function handleSave() {
     setSaving(true);
     try {
-      const payload = { narration: form.narration, amount: form.amount ? Number(form.amount) : undefined };
+      const payload = { narration: form.narration, amount: form.amount ? Number(form.amount) : undefined, payment_mode: form.payment_mode || null, due_days: form.due_days !== '' && form.due_days != null ? Number(form.due_days) : null };
 
       if (isNew) {
         const r = await api.post('/vouchers', payload);
@@ -114,13 +118,33 @@ export default function VoucherDetail() {
     finally { setSaving(false); }
   }
 
-  async function handleAssign() {
-    if (!assignTo) return toast.error('Select a manager');
+  async function handleDelete() {
+    if (!window.confirm(`Delete voucher ${voucher.voucher_no || id}? This cannot be undone.`)) return;
+    setDeleting(true);
     try {
-      await api.post(`/vouchers/${id}/assign`, { manager_id: assignTo });
-      toast.success('Assigned to manager');
-      fetchVoucher();
+      await api.delete(`/vouchers/${id}`);
+      toast.success('Voucher deleted');
+      const roleBase = `/${user.role === 'executive' ? 'executive' : 'admin'}`;
+      nav(`${roleBase}/vouchers`, { replace: true });
+    } catch (err) { toast.error(err.response?.data?.error || 'Delete failed'); }
+    finally { setDeleting(false); }
+  }
+
+  async function handleAssign() {
+    if (!assignTo) return toast.error('Select a manager or approver');
+    setAssigning(true);
+    try {
+      const r = await api.post(`/vouchers/${id}/assign`, { manager_id: assignTo });
+      if (r.data.due_today_mail === 'sent') {
+        toast.success('Voucher assigned — due-today email sent');
+      } else if (r.data.due_today_mail === 'failed') {
+        toast.error('Voucher assigned, but the due-today email failed to send — check Activity Log');
+      } else {
+        toast.success('Voucher assigned');
+      }
+      await fetchVoucher();
     } catch (err) { toast.error(err.response?.data?.error || 'Assign failed'); }
+    finally { setAssigning(false); }
   }
 
   async function handleManagerAction(action) {
@@ -170,7 +194,7 @@ export default function VoucherDetail() {
     setSavingUtr(true);
     try {
       await api.post(`/vouchers/${id}/utr`, { utr_no: utrInput.trim() });
-      toast.success('UTR saved');
+      toast.success('UTR saved — voucher marked as Paid');
       setUtrInput('');
       setShowUtrModal(false);
       await fetchVoucher();
@@ -180,8 +204,8 @@ export default function VoucherDetail() {
   }
 
   async function handlePreviewPdf() {
+    setPdfLoading(true);
     try {
-      // Generate if not yet generated
       if (!voucher.voucher_pdf_path) {
         await api.post(`/vouchers/${id}/generate`);
         await fetchVoucher();
@@ -191,6 +215,7 @@ export default function VoucherDetail() {
       const name = voucher.voucher_no ? `voucher-${voucher.voucher_no.replace(/\//g, '-')}.pdf` : `voucher-${id.slice(0, 8)}.pdf`;
       setViewer({ url, mimeType: 'application/pdf', name });
     } catch (err) { toast.error(err.response?.data?.error || 'Failed to load PDF'); }
+    finally { setPdfLoading(false); }
   }
 
   async function handleAddComment() {
@@ -204,9 +229,12 @@ export default function VoucherDetail() {
   // ── Attachment upload ──
   async function handleFileUpload(files) {
     if (!files || !files.length) return;
+    const { valid, errors } = validateAttachmentFiles(Array.from(files));
+    if (errors.length) errors.forEach(e => toast.error(e));
+    if (!valid.length) return;
     setUploading(true);
     const fd = new FormData();
-    for (const f of files) fd.append('files', f);
+    for (const f of valid) fd.append('files', f);
     try {
       const r = await api.post(`/vouchers/${id}/attachments`, fd);
       setAttachments(a => [...a, ...r.data.attachments]);
@@ -250,12 +278,14 @@ export default function VoucherDetail() {
   const supplierInfo = data.supplier_info;
   const isAdmin        = user.role === 'admin';
   const isExecutive    = user.role === 'executive';
-  const canEdit        = (isAdmin || isExecutive) && [VS.DRAFT, VS.ASSIGNED].includes(voucher.status);
+  const isApprover    = user.role === 'approver';
+  const canEdit        = (isAdmin || isExecutive || isApprover) && [VS.DRAFT, VS.ASSIGNED].includes(voucher.status);
   const canAssign      = (isAdmin || isExecutive) && [VS.DRAFT, VS.ASSIGNED].includes(voucher.status);
-  const canManagerAct  = user.role === 'manager' && voucher.status === VS.ASSIGNED;
+  const canDelete        = (isAdmin) && ![VS.READY_TO_REMIT, VS.PAID].includes(voucher.status);
+  const canManagerAct  = ['manager', 'approver'].includes(user.role) && voucher.status === VS.ASSIGNED && voucher.assigned_to === user.id;
   const canApproverVerify  = user.role === 'approver' && voucher.status === VS.APPROVED;
   const canApproverApprove = user.role === 'approver' && voucher.status === VS.EXPORTED;
-  const canGenerate        = (isAdmin || isExecutive) && [VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && !!voucher.utr_no;
+  const canGenerate        = (isAdmin || isExecutive || isApprover) && [VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && !!voucher.utr_no;
   const canEnterUTR        = (isAdmin || isExecutive) && voucher.status === VS.READY_TO_REMIT && !voucher.utr_no;
 
   // Financial values: if bill-based voucher, pull from bill; else from form/voucher
@@ -266,8 +296,9 @@ export default function VoucherDetail() {
   const sgst     = parseFloat(hasBill ? voucher.bill_sgst           : src.sgst)           || 0;
   const igst     = parseFloat(hasBill ? voucher.bill_igst           : src.igst)           || 0;
   const tds      = parseFloat(hasBill ? voucher.bill_tds_amount     : src.tds_amount)     || 0;
+  const creditNote  = hasBill ? (parseFloat(voucher.bill_credit_note_amount) || 0) : 0;
   const grossTotal  = taxable + cgst + sgst + igst;
-  const netPayable  = grossTotal - tds;
+  const netPayable  = grossTotal - tds - creditNote;
   // For bill-based vouchers, amount to pay is the voucher's specific amount
   const amountToPay = hasBill
     ? (parseFloat(voucher.amount) || 0)
@@ -316,13 +347,46 @@ export default function VoucherDetail() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {canEdit && !editing && <button className="btn" onClick={() => setEditing(true)}>Edit</button>}
+            {isAdmin && !editing && canDelete && (
+              <button className="btn" onClick={handleDelete} disabled={deleting}
+                style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
             {editing && (
               <>
                 <button className="btn btn-green" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
                 <button className="btn" onClick={() => isNew ? nav(-1) : (() => { setEditing(false); setForm(voucher); })()}>Cancel</button>
               </>
             )}
-            {canGenerate && <button className="btn btn-green" onClick={handlePreviewPdf}>📄 {voucher.voucher_pdf_path ? 'Preview PDF' : 'Generate & Preview'}</button>}
+            {canGenerate && (
+              <button className="btn btn-green" onClick={handlePreviewPdf} disabled={pdfLoading}>
+                {pdfLoading
+                  ? <><span className="pdf-spinner" /> {voucher.voucher_pdf_path ? 'Loading PDF…' : 'Generating…'}</>
+                  : <>📄 {voucher.voucher_pdf_path ? 'Preview PDF' : 'Generate & Preview'}</>}
+              </button>
+            )}
+            {/* {canGenerate && voucher.voucher_pdf_path && (
+              <button className="btn" style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0' }}
+                disabled={pdfLoading}
+                onClick={async () => {
+                  setPdfLoading(true);
+                  try {
+                    await api.post(`/vouchers/${id}/generate`);
+                    await fetchVoucher();
+                    toast.success('PDF regenerated');
+                  } catch (err) { toast.error(err.response?.data?.error || 'Regenerate failed'); }
+                  finally { setPdfLoading(false); }
+                }}>
+                {pdfLoading ? <><span className="pdf-spinner" /> Regenerating…</> : '↺ Regenerate'}
+              </button>
+            )} */}
+            {/* {canGenerate && (
+              <button className="btn" style={{ background: '#fefce8', color: '#854d0e', border: '1px solid #fde68a' }}
+                onClick={() => window.open(`/api/vouchers/${voucher.id}/preview-html?token=${localStorage.getItem('token')}`, '_blank')}>
+                🧪 Preview HTML
+              </button>
+            )} */}
             {(isAdmin || isExecutive) && [VS.READY_TO_REMIT, VS.PAID].includes(voucher.status) && voucher.utr_no && (
               <button className="btn" style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe' }}
                 onClick={() => setShowEmailModal(true)}>
@@ -344,7 +408,7 @@ export default function VoucherDetail() {
                   <button className="btn btn-sm btn-primary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                     + Upload Files
                   </button>
-                  <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx"
+                  <input ref={fileInputRef} type="file" multiple accept={ALLOWED_ATTACHMENT_EXTENSIONS.join(',')}
                     style={{ display: 'none' }}
                     onChange={e => handleFileUpload(Array.from(e.target.files))} />
                 </div>
@@ -408,6 +472,21 @@ export default function VoucherDetail() {
                 {editing ? (
                   <>
                     <div className="form-group">
+                      <label>Payment Mode</label>
+                      <select value={form.payment_mode || ''} onChange={e => setForm(f => ({ ...f, payment_mode: e.target.value }))}>
+                        <option value=''>— Select —</option>
+                        <option value='NEFT'>NEFT</option>
+                        <option value='RTGS'>RTGS</option>
+                        <option value='FT'>FT</option>
+                        <option value="CHEQUE">CHEQUE</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Credit Days</label>
+                      <input type="number" min="0" value={form.due_days ?? ''} placeholder={`Default: ${voucher.bill_due_days ?? '—'} (from bill)`}
+                        onChange={e => setForm(f => ({ ...f, due_days: e.target.value }))} />
+                    </div>
+                    <div className="form-group">
                       <label>Narration</label>
                       <textarea rows={2} value={form.narration || ''} onChange={e => setForm(f => ({ ...f, narration: e.target.value }))} />
                     </div>
@@ -417,6 +496,8 @@ export default function VoucherDetail() {
                   {/* Due date warning banner */}
                   {(() => {
                     if (!voucher.due_date) return null;
+                    const approvedStatuses = ['approved', 'ready_to_remit', 'exported', 'downloaded', 'paid'];
+                    if (approvedStatuses.includes(voucher.status)) return null;
                     const today    = new Date(); today.setHours(0,0,0,0);
                     const due      = new Date(voucher.due_date); due.setHours(0,0,0,0);
                     const daysLeft = Math.round((due - today) / 86400000);
@@ -445,16 +526,24 @@ export default function VoucherDetail() {
                       ['Invoice Date',    fmtDate(voucher.bill_invoice_date)],
                       ['Invoice Ref No.', voucher.bill_ref_no],
                       ['Bill No.',        voucher.bill_no],
-                      ['Due Days',        voucher.bill_due_days ? `${voucher.bill_due_days} days` : null],
+                      ['Purchase Type',   voucher.bill_purchase_type_label],
+                      ['Account Name',    voucher.bill_purchase_type_code === 'PROJECT' ? voucher.bill_salespro_act_name : null],
+                      ['Due Days',        (voucher.due_days ?? voucher.bill_due_days) != null ? `${voucher.due_days ?? voucher.bill_due_days} days` : null],
                       ['Due Date',        voucher.due_date ? fmtDate(voucher.due_date) : null],
                       ['Assigned Date',   voucher.assigned_at ? fmtDate(voucher.assigned_at) : null],
-                      ['Payment Ref.',    voucher.bill_payment_reference],
+                      [voucher.bill_purchase_type_code === 'CONSUME' ? 'State' : 'Payment Ref.', voucher.bill_payment_reference],
                     ].map(([l, v]) => v ? (
                       <div key={l}>
                         <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 2 }}>{l}</div>
                         <div style={{ fontWeight: 500 }}>{v}</div>
                       </div>
                     ) : null)}
+                    {voucher.payment_mode && (
+                      <div>
+                        <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 2 }}>Payment Mode</div>
+                        <div style={{ fontWeight: 600 }}>{voucher.payment_mode}</div>
+                      </div>
+                    )}
                     {voucher.narration && (
                       <div style={{ gridColumn: '1/-1' }}>
                         <div style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 2 }}>Narration</div>
@@ -506,6 +595,13 @@ export default function VoucherDetail() {
                       <span className="mono" style={{ color: 'var(--red)' }}>− {fmt(tds)}</span>
                     </div>
                   )}
+                  {hasBill && creditNote > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text2)' }}>Credit Note</span>
+                      <span className="mono" style={{ color: 'var(--red)' }}>− {fmt(creditNote)}</span>
+                    </div>
+                  )}
                   {hasBill && (
                     <div style={{ display: 'flex', justifyContent: 'space-between',
                       padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
@@ -541,15 +637,17 @@ export default function VoucherDetail() {
                 </div>
               )}
             </div>
-            {/* ── SalesPro Status ── */}
-            <SalesproStatusCard
-              paymentRef={voucher.bill_payment_reference || null}
-              supplierName={voucher.supplier_name || ''}
-              voucherId={voucher.id}
-              editing={editing}
-              paymentStatus={voucher.payment_status}
-              onStatusSynced={() => fetchVoucher()}
-            />
+            {/* ── SalesPro Status (hidden for Consume purchase type — Cost Centre is a State, not a SalesPro ref) ── */}
+            {voucher.bill_purchase_type_code !== 'CONSUME' && (
+              <SalesproStatusCard
+                paymentRef={voucher.bill_payment_reference || null}
+                supplierName={voucher.supplier_name || ''}
+                voucherId={voucher.id}
+                editing={editing}
+                paymentStatus={voucher.payment_status}
+                onStatusSynced={() => fetchVoucher()}
+              />
+            )}
 
           </div>
 
@@ -559,7 +657,7 @@ export default function VoucherDetail() {
             {/* Assign */}
             {canAssign && (
               <div className="card" style={{ marginBottom: 16 }}>
-                <div className="card-head"><div className="card-title">Assign to Manager</div></div>
+                <div className="card-head"><div className="card-title">Assign to Manager / Approver</div></div>
                 <div className="card-body">
                   {/* {supplierInfo?.manager_name && (
                     <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>
@@ -567,20 +665,20 @@ export default function VoucherDetail() {
                     </div>
                   )} */}
                   <div className="form-group">
-                    <label>Manager</label>
+                    <label>Manager / Approver</label>
                     <select value={assignTo} onChange={e => setAssignTo(e.target.value)}>
-                      <option value="">Select manager…</option>
-                      {managers.filter(m => m.role === 'manager').map(m => (
+                      <option value="">Select manager or approver…</option>
+                      {managers.filter(m => m.role === 'manager' || m.role === 'approver').map(m => (
                         <option key={m.id} value={m.id}>
-                          {m.name}{supplierInfo?.owned_by === m.id ? ' ★' : ''}
+                          {m.name}{m.role === 'approver' ? ' (Approver)' : ''}{supplierInfo?.owned_by === m.id ? ' ★' : ''}
                         </option>
                       ))}
                     </select>
                   </div>
                   <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}
                     onClick={handleAssign}
-                    disabled={!assignTo || assignTo === voucher.assigned_to}>
-                    {voucher.assigned_to && assignTo === voucher.assigned_to ? 'Already Assigned' : 'Assign'}
+                    disabled={!assignTo || assignTo === voucher.assigned_to || assigning}>
+                    {assigning ? 'Assigning…' : voucher.assigned_to && assignTo === voucher.assigned_to ? 'Already Assigned' : 'Assign'}
                   </button>
                 </div>
               </div>
@@ -858,7 +956,16 @@ export default function VoucherDetail() {
             style={{ width: '90vw', maxWidth: 900, height: '80vh', background: '#fff',
               borderRadius: '0 0 10px 10px', overflow: 'hidden' }}>
             {viewer.mimeType === 'application/pdf' ? (
-              <iframe src={viewer.url} style={{ width: '100%', height: '100%', border: 'none' }} title="File" />
+              isAndroid() ? (
+                <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--text3)' }}>
+                  <div style={{ fontSize: 40 }}>📄</div>
+                  <div>{viewer.name}</div>
+                  <a href={viewer.url} target="_blank" rel="noopener noreferrer" className="btn btn-primary">Open PDF</a>
+                </div>
+              ) : (
+                <iframe src={viewer.url} style={{ width: '100%', height: '100%', border: 'none' }} title="File" />
+              )
             ) : (
               <div style={{ width: '100%', height: '100%', background: '#f0ede6',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',

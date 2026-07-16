@@ -45,10 +45,10 @@ function parseBuffer(buffer) {
         _rowIdx:              i + 2,
         supplier_name:        supplierName,
         trade_name:           c(1),
-        supplier_type:        normCode(c(2), ['RESELLER','DISTRIBUTOR','OEM']),
-        gstin:                c(3).toUpperCase(),
-        cin_number:           c(4).toUpperCase(),
-        msme_reg_number:      c(5),
+        name_for_bank:        c(2),
+        supplier_type:        normCode(c(3), ['RESELLER','DISTRIBUTOR','OEM','OTHER']),
+        gstin:                c(4).toUpperCase() === 'NA' ? '' : c(4).toUpperCase(),
+        cin_number:           c(5).toUpperCase(),
         // Contact
         contact_name:         c(6),
         designation:          c(7),
@@ -86,13 +86,12 @@ function parseBuffer(buffer) {
         gst_certificate:      c(34),
         tds_applicable:       normBool(c(35)),
         lower_deduction_cert: c(36),
-        msme_declaration:     c(37),
-        udyam_reg_number:     c(38),
-        pf_registration:      c(39),
-        esic_registration:    c(40),
+        udyam_reg_number:     c(37),
+        pf_registration:      c(38),
+        esic_registration:    c(39),
         // Operational
-        products_services_raw: c(41),
-        territory_raw:         c(42),
+        products_services_raw: c(40),
+        territory_raw:         c(41),
       };
     })
     .filter(Boolean);
@@ -120,7 +119,8 @@ async function parseSupplierXl(req, res) {
     const seenName  = new Map();
 
     const result = rows.map(r => {
-      const gstinKey = r.gstin?.toUpperCase();
+      const rawGstin = r.gstin?.toUpperCase();
+      const gstinKey = (rawGstin && rawGstin !== 'NA') ? rawGstin : null;
       const nameKey  = r.supplier_name?.toLowerCase().trim();
 
       // Check intra-file duplicate first
@@ -197,18 +197,17 @@ async function confirmSupplierImport(req, res) {
       const vals = [
         r.supplier_name        || null,
         r.trade_name           || null,
+        r.name_for_bank        || null,
         typeDetId,
         r.gstin                || null,
         r.pan_number           || null,
         r.cin_number           || null,
-        r.msme_reg_number      || null,
         r.udyam_reg_number     || null,
         r.pf_registration      || null,
         r.esic_registration    || null,
         r.tds_applicable       || false,
         r.gst_certificate      || null,
         r.lower_deduction_cert || null,
-        r.msme_declaration     || null,
         resolvePs(r.products_services_raw),
         resolveTer(r.territory_raw),
       ];
@@ -222,16 +221,16 @@ async function confirmSupplierImport(req, res) {
         );
         const vendor_code = vcRes.rows[0].vc;
 
-        // vals = [name,trade,typeDetId,gstin,pan,cin,msme,udyam,pf,esic,tds,gst_cert,lower,msme_decl,ps,ter]
+        // vals = [name,trade,name_for_bank,typeDetId,gstin,pan,cin,udyam,pf,esic,tds,gst_cert,lower,ps,ter]
         const ins = await client.query(
           `INSERT INTO suppliers (
-             supplier_name, trade_name, supplier_type_det_id,
-             gstin, pan_number, cin_number, msme_reg_number, udyam_reg_number,
+             supplier_name, trade_name, name_for_bank, supplier_type_det_id,
+             gstin, pan_number, cin_number, udyam_reg_number,
              pf_registration, esic_registration, tds_applicable,
-             gst_certificate, lower_deduction_cert, msme_declaration,
+             gst_certificate, lower_deduction_cert,
              products_services, territory,
              vendor_code, is_active, created_by, approval_status, approval_notes
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,true,$18,'pending',$19)
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,true,$17,'pending',$18)
            RETURNING id`,
           [...vals, vendor_code, req.user.id, notes]
         );
@@ -243,26 +242,25 @@ async function confirmSupplierImport(req, res) {
           `UPDATE suppliers SET
              supplier_name        = COALESCE($1,  supplier_name),
              trade_name           = COALESCE($2,  trade_name),
-             supplier_type_det_id = COALESCE($3,  supplier_type_det_id),
-             gstin                = COALESCE($4,  gstin),
-             pan_number           = COALESCE($5,  pan_number),
-             cin_number           = COALESCE($6,  cin_number),
-             msme_reg_number      = COALESCE($7,  msme_reg_number),
+             name_for_bank        = COALESCE($3,  name_for_bank),
+             supplier_type_det_id = COALESCE($4,  supplier_type_det_id),
+             gstin                = COALESCE($5,  gstin),
+             pan_number           = COALESCE($6,  pan_number),
+             cin_number           = COALESCE($7,  cin_number),
              udyam_reg_number     = COALESCE($8,  udyam_reg_number),
              pf_registration      = COALESCE($9,  pf_registration),
              esic_registration    = COALESCE($10, esic_registration),
              tds_applicable       = $11,
              gst_certificate      = COALESCE($12, gst_certificate),
              lower_deduction_cert = COALESCE($13, lower_deduction_cert),
-             msme_declaration     = COALESCE($14, msme_declaration),
-             products_services    = COALESCE($15, products_services),
-             territory            = COALESCE($16, territory),
+             products_services    = COALESCE($14, products_services),
+             territory            = COALESCE($15, territory),
              approval_status      = 'pending',
              approved_by          = NULL,
              last_approved_at     = NULL,
-             approval_notes       = $17,
+             approval_notes       = $16,
              updated_at           = NOW()
-           WHERE id = $18`,
+           WHERE id = $17`,
           [...vals, notes, r.existing_id]
         );
         suppId = r.existing_id;

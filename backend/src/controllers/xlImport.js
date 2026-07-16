@@ -2,6 +2,7 @@ const XLSX       = require('xlsx');
 const pool       = require('../config/db');
 const paramCache = require('../utils/parameterCache');
 const { logActivity } = require('../utils/activityLog');
+const { notify } = require('../utils/notify');
 
 // ─────────────────────────────────────────────
 //  Helpers
@@ -104,10 +105,15 @@ function parseExcelBuffer(buffer) {
     const supplierRaw = String(col(row, 'supplier name') || '').trim();
     const typeRaw     = String(col(row, 'type') || '').trim();
     const cosCentre   = String(col(row, 'cos centre', 'cost centre', 'cost center') || '').trim();
+    const pymtModeRaw = String(col(row, 'payment mode', 'pymt_mode', 'payment_mode') || '').trim().toUpperCase();
+    const pymtMode    = ['NEFT','RTGS','FT', 'CHEQUE'].includes(pymtModeRaw) ? pymtModeRaw : 'NEFT';
 
-    // Normalise type → SALABLE / CONSUMPTION code
-    const typeCode = /salable/i.test(typeRaw) ? 'SALABLE'
-                   : /consumption/i.test(typeRaw) ? 'CONSUMPTION'
+    // Normalise type → SALE / SALE_MULTIPLE / CONSUME / PROJECT code
+    // (checked before the plain "sale" pattern so it isn't swallowed by it)
+    const typeCode = /sale.*multiple|multiple.*sale/i.test(typeRaw) ? 'SALE_MULTIPLE'
+                   : /salable|sale/i.test(typeRaw)       ? 'SALE'
+                   : /consumption|consume/i.test(typeRaw) ? 'CONSUME'
+                   : /project/i.test(typeRaw)             ? 'PROJECT'
                    : null;
 
     vouchers.push({
@@ -126,6 +132,7 @@ function parseExcelBuffer(buffer) {
         net_payable:       netPayable || (totalAmt - tds),
         due_days:          creditDays || null,
         payment_reference: cosCentre,
+        payment_mode:      pymtMode,
         narration:         '',
       });
   }
@@ -156,6 +163,61 @@ function findSupplier(partyName, suppliers) {
 }
 
 // ─────────────────────────────────────────────
+//  Uniqueness — Invoice Ref No must be globally unique across bills.
+//  Cost Centre must also be globally unique, EXCEPT for the types in
+//  COST_CENTRE_NOT_UNIQUE_TYPES — for Consume, Cost Centre is a State
+//  (expected to repeat); for Sale - Multiple, one Cost Centre can
+//  legitimately cover several bills. Checked against existing bills AND
+//  across rows within the same import batch. Mutates each voucher with
+//  `duplicate_ref_reason` / `duplicate_centre_reason` (shown under their
+//  own columns) plus an overall `duplicate` / `duplicate_reason` for the
+//  summary banner and skip logic. Used identically at preview and at
+//  confirm time so the two stay in sync.
+// ─────────────────────────────────────────────
+
+const COST_CENTRE_NOT_UNIQUE_TYPES = ['CONSUME', 'SALE_MULTIPLE'];
+
+async function markDuplicates(vouchers) {
+  const refs    = [...new Set(vouchers.map(v => v.bill_ref_no).filter(Boolean))];
+  const centres = [...new Set(
+    vouchers.filter(v => !COST_CENTRE_NOT_UNIQUE_TYPES.includes(v.purchase_type_code)).map(v => v.payment_reference).filter(Boolean)
+  )];
+
+  const [refRes, centreRes] = await Promise.all([
+    refs.length    ? pool.query(`SELECT bill_ref_no FROM bills WHERE bill_ref_no = ANY($1::text[])`, [refs])
+                   : Promise.resolve({ rows: [] }),
+    centres.length ? pool.query(`SELECT payment_reference FROM bills WHERE payment_reference = ANY($1::text[])`, [centres])
+                   : Promise.resolve({ rows: [] }),
+  ]);
+  const existingRefs    = new Set(refRes.rows.map(r => r.bill_ref_no));
+  const existingCentres = new Set(centreRes.rows.map(r => r.payment_reference));
+
+  const seenRefs    = new Set();
+  const seenCentres = new Set();
+
+  vouchers.forEach(v => {
+    let refReason = null;
+    if (v.bill_ref_no) {
+      if (existingRefs.has(v.bill_ref_no))     refReason = 'Invoice Ref No already exists';
+      else if (seenRefs.has(v.bill_ref_no))    refReason = 'Invoice Ref No duplicated in this file';
+      seenRefs.add(v.bill_ref_no);
+    }
+    let centreReason = null;
+    if (!COST_CENTRE_NOT_UNIQUE_TYPES.includes(v.purchase_type_code) && v.payment_reference) {
+      if (existingCentres.has(v.payment_reference))  centreReason = 'Cost Centre already exists';
+      else if (seenCentres.has(v.payment_reference))  centreReason = 'Cost Centre duplicated in this file';
+      seenCentres.add(v.payment_reference);
+    }
+    v.duplicate_ref_reason    = refReason;
+    v.duplicate_centre_reason = centreReason;
+    v.duplicate        = !!(refReason || centreReason);
+    v.duplicate_reason = [refReason, centreReason].filter(Boolean).join(' & ') || null;
+  });
+
+  return vouchers;
+}
+
+// ─────────────────────────────────────────────
 //  Endpoints
 // ─────────────────────────────────────────────
 
@@ -170,14 +232,22 @@ async function parseXl(req, res) {
       "SELECT id, supplier_name, approval_status FROM suppliers WHERE is_active = true ORDER BY supplier_name"
     );
     const bankRes = await pool.query(`
-      SELECT cb.*, cd.company_name
+      SELECT cb.*, cd.company_name,
+             pd.code AS purchase_type_code
       FROM company_bank_accounts cb
       JOIN company_details cd ON cb.company_id = cd.id
+      LEFT JOIN parameter_details pd ON pd.parameterdetid = cb.purchase_type_det_id
       WHERE cd.is_active = true
       ORDER BY cd.company_name, cb.is_primary DESC, cb.created_at
     `);
+    const stateRes = await pool.query(`
+      SELECT pd.parameterdetid, pd.parametervalues
+      FROM parameter_details pd
+      JOIN parameters p ON p.parameterid = pd.parameterid
+      WHERE p.parametertext = 'State/UT' AND pd.is_active = true
+      ORDER BY pd.displayorder
+    `);
 
-    // Match suppliers first (needed for duplicate check by supplier+date)
     const vouchers = parsed.map(v => {
       const matched = findSupplier(v.party_name, suppRes.rows);
       return {
@@ -188,32 +258,20 @@ async function parseXl(req, res) {
       };
     });
 
-    // Duplicate detection: bill_ref_no AND supplier_id AND invoice_date all match
-    const candidates = vouchers.filter(v => v.bill_ref_no && v.supplier_id && v.date);
-    const existingKeys = new Set(); // key: "bill_ref_no|supplier_id|date"
-
-    if (candidates.length) {
-      const billRefs = candidates.map(v => v.bill_ref_no);
-      const dupRes = await pool.query(
-        `SELECT bill_ref_no, supplier_id::text, invoice_date::text
-         FROM bills
-         WHERE bill_ref_no = ANY($1::text[])`,
-        [billRefs]
-      );
-      dupRes.rows.forEach(r => {
-        const d = r.invoice_date ? String(r.invoice_date).slice(0, 10) : '';
-        existingKeys.add(`${r.bill_ref_no}|${r.supplier_id}|${d}`);
-      });
-    }
-
+    // Consume type: Cost Centre must be a State — normalise the raw Excel text
+    // (case/whitespace variations) to the canonical state name where it matches.
+    const stateByLower = new Map(stateRes.rows.map(s => [s.parametervalues.toLowerCase(), s.parametervalues]));
     vouchers.forEach(v => {
-      const dateKey = v.date ? String(v.date).slice(0, 10) : '';
-      const key = `${v.bill_ref_no}|${v.supplier_id}|${dateKey}`;
-      v.duplicate        = !!(v.bill_ref_no && v.supplier_id && dateKey && existingKeys.has(key));
-      v.duplicate_reason = v.duplicate ? 'Bill Ref No + Supplier + Date already exists' : null;
+      if (v.purchase_type_code === 'CONSUME' && v.payment_reference) {
+        const canonical = stateByLower.get(v.payment_reference.trim().toLowerCase());
+        if (canonical) v.payment_reference = canonical;
+      }
     });
 
-    res.json({ vouchers, suppliers: suppRes.rows, banks: bankRes.rows });
+    // Invoice Ref No and Cost Centre must each be globally unique
+    await markDuplicates(vouchers);
+
+    res.json({ vouchers, suppliers: suppRes.rows, banks: bankRes.rows, states: stateRes.rows });
   } catch (err) {
     console.error('XL parse error:', err);
     res.status(500).json({ error: 'Failed to parse file: ' + err.message });
@@ -226,31 +284,23 @@ async function confirmImport(req, res) {
     return res.status(400).json({ error: 'vouchers array required' });
   }
 
-  const [salableId, consumptionId] = await Promise.all([
-    paramCache.detId('Purchase Type', 'SALABLE'),
-    paramCache.detId('Purchase Type', 'CONSUMPTION'),
+  const [saleId, consumeId, projectId, saleMultipleId] = await Promise.all([
+    paramCache.detId('Purchase Type', 'SALE'),
+    paramCache.detId('Purchase Type', 'CONSUME'),
+    paramCache.detId('Purchase Type', 'PROJECT'),
+    paramCache.detId('Purchase Type', 'SALE_MULTIPLE'),
   ]);
 
   function purchaseTypeId(code) {
-    if (code === 'SALABLE')     return salableId;
-    if (code === 'CONSUMPTION') return consumptionId;
+    if (code === 'SALE')          return saleId;
+    if (code === 'CONSUME')       return consumeId;
+    if (code === 'PROJECT')       return projectId;
+    if (code === 'SALE_MULTIPLE') return saleMultipleId;
     return null;
   }
 
-  // Re-check duplicates at confirm time (bill_ref_no AND supplier_id AND invoice_date)
-  const candidates = vouchers.filter(v => v.bill_ref_no && v.supplier_id && v.date);
-  const existingKeys = new Set();
-  if (candidates.length) {
-    const dupRes = await pool.query(
-      `SELECT bill_ref_no, supplier_id::text, invoice_date::text
-       FROM bills WHERE bill_ref_no = ANY($1::text[])`,
-      [candidates.map(v => v.bill_ref_no)]
-    );
-    dupRes.rows.forEach(r => {
-      const d = r.invoice_date ? String(r.invoice_date).slice(0, 10) : '';
-      existingKeys.add(`${r.bill_ref_no}|${r.supplier_id}|${d}`);
-    });
-  }
+  // Re-check uniqueness at confirm time (Invoice Ref No / Cost Centre, globally unique)
+  await markDuplicates(vouchers);
 
   // Pre-check: all matched suppliers must be approved
   const supplierIds = [...new Set(vouchers.filter(v => v.supplier_id).map(v => v.supplier_id))];
@@ -273,10 +323,8 @@ async function confirmImport(req, res) {
     const skipped = [];
 
     for (const v of vouchers) {
-      const dateKey = v.date ? String(v.date).slice(0, 10) : '';
-      const key = `${v.bill_ref_no}|${v.supplier_id}|${dateKey}`;
-      if (v.bill_ref_no && v.supplier_id && dateKey && existingKeys.has(key)) {
-        skipped.push(v.bill_ref_no);
+      if (v.duplicate) {
+        skipped.push({ bill_ref_no: v.bill_ref_no, payment_reference: v.payment_reference, reason: v.duplicate_reason });
         continue;
       }
 
@@ -286,12 +334,12 @@ async function confirmImport(req, res) {
         `INSERT INTO bills (
            bill_no, supplier_id, invoice_date,
            taxable_amount, cgst, sgst, igst, tds_amount, total_amount,
-           payment_reference, narration,
+           payment_reference, payment_mode, narration,
            tally_vch_no, bill_ref_no, bill_date,
            due_days, purchase_type_det_id, company_bank_id, created_by
          ) VALUES (
            'BILL-' || LPAD(nextval('bill_no_seq')::text, 5, '0'),
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          RETURNING *`,
         [
           v.supplier_id                        || null,
@@ -303,6 +351,7 @@ async function confirmImport(req, res) {
           v.tds_amount                         || 0,
           grossTotal,
           v.payment_reference                  || '',
+          v.payment_mode                       || 'NEFT',
           v.narration                          || '',
           v.vch_no                             || '',
           v.bill_ref_no                        || '',
@@ -317,6 +366,15 @@ async function confirmImport(req, res) {
     }
 
     await client.query('COMMIT');
+
+    if (created.length) {
+      notify({
+        type: 'bill_created',
+        message: `${created.length} bill(s) imported via Tally by ${req.user.name}`,
+        entity_type: 'bill', entity_id: null, created_by: req.user.id,
+      });
+    }
+
     res.status(201).json({ created, count: created.length, skipped, skipped_count: skipped.length });
   } catch (err) {
     await client.query('ROLLBACK');

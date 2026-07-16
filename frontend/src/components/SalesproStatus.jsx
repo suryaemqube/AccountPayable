@@ -121,14 +121,15 @@ export function InstallPanel({ rows }) {
 // ─────────────────────────────────────────────────────────────────
 //  Payment summary rows table (compact, used inside VoucherDetail)
 // ─────────────────────────────────────────────────────────────────
-// selectable=true  → show a radio-style checkbox column
-// selectedRef      → currently selected paymentReference value
-// onSelect(ref)    → called when a row checkbox is clicked
-export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
+// selectable=true  → show a checkbox column (multi-select)
+// selectedRefs     → array of currently selected paymentReference values
+// onToggle(ref)    → called when a row checkbox is clicked, to toggle it
+export function PaymentTable({ rows, selectable, selectedRefs, onToggle }) {
   if (!rows || rows.length === 0)
     return <div style={{ padding: '10px 0', color: 'var(--text3)', fontSize: 13 }}>No payment records found.</div>;
 
   const thStyle = { textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text3)', fontWeight: 500 };
+  const selectedSet = new Set(selectedRefs || []);
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -139,7 +140,7 @@ export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
             <th style={thStyle}>ActName</th>
             <th style={thStyle}>Executive</th>
             <th style={thStyle}>Order No.</th>
-            <th style={thStyle}>Invoice No.</th>
+            <th style={thStyle}>Invoice Ref No.</th>
             <th style={thStyle}>Invoice Date</th>
             <th style={{ ...thStyle, textAlign: 'right' }}>Invoice Amt</th>
             <th style={{ ...thStyle, textAlign: 'right' }}>Paid</th>
@@ -151,10 +152,10 @@ export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
         <tbody>
           {rows.map((r, i) => {
             const ref       = r.paymentReference;
-            const isChecked = selectable && ref && ref === selectedRef;
+            const isChecked = selectable && ref && selectedSet.has(ref);
             return (
               <tr key={i}
-                onClick={selectable && ref ? () => onSelect?.(isChecked ? null : ref) : undefined}
+                onClick={selectable && ref ? () => onToggle?.(ref) : undefined}
                 style={{
                   borderBottom: '1px solid var(--border)',
                   cursor: selectable && ref ? 'pointer' : undefined,
@@ -163,7 +164,7 @@ export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
                 {selectable && (
                   <td style={{ padding: '7px 8px', textAlign: 'center' }}>
                     {ref ? (
-                      <input type="radio" readOnly
+                      <input type="checkbox" readOnly
                         checked={isChecked}
                         style={{ accentColor: 'var(--primary)', width: 15, height: 15, cursor: 'pointer' }}
                       />
@@ -173,7 +174,7 @@ export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
                 <td style={{ padding: '7px 8px' }}><span className="mono">{r.actName || '—'}</span></td>
                 <td style={{ padding: '7px 8px' }}><span className="mono">{r.executive || '—'}</span></td>
                 <td style={{ padding: '7px 8px' }}><span className="mono">{r.orderNo || '—'}</span></td>
-                <td style={{ padding: '7px 8px' }}><span className="mono">{r.invoiceNo || '—'}</span></td>
+                <td style={{ padding: '7px 8px' }}><span className="mono">{r.paymentReference || '—'}</span></td>
                 <td style={{ padding: '7px 8px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.invoiceDate || '—'}</td>
                 <td style={{ padding: '7px 8px', textAlign: 'right' }}><span className="mono">₹{fmt(r.invoiceAmount)}</span></td>
                 <td style={{ padding: '7px 8px', textAlign: 'right', color: 'var(--green)' }}><span className="mono">₹{fmt(r.paidAmount)}</span></td>
@@ -190,6 +191,80 @@ export function PaymentTable({ rows, selectable, selectedRef, onSelect }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  AccountSearchField — standalone SalesPro account search + select
+//  Props:
+//    value      (string)  — currently selected account name (controlled display)
+//    onSelect   (fn)      — called with { actId, actName } when a row is picked
+//    disabled   (bool)
+// ─────────────────────────────────────────────────────────────────
+export function AccountSearchField({ value, onSelect, disabled }) {
+  const [searchInput,   setSearchInput]   = useState(value || '');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [accounts,      setAccounts]      = useState([]);
+  const searchTimer = useRef(null);
+
+  function handleSearchChange(val) {
+    setSearchInput(val);
+    setAccounts([]);
+    clearTimeout(searchTimer.current);
+    if (val.trim().length < 3) return;
+    searchTimer.current = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const r = await api.post('/salespro/search-accounts', { searchTerm: val.trim() });
+        setAccounts(r.data.Data || []);
+      } catch { /* silent */ }
+      finally { setSearchLoading(false); }
+    }, 400);
+  }
+
+  function pick(acct) {
+    setSearchInput(acct.actName);
+    setAccounts([]);
+    onSelect?.(acct);
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        value={searchInput}
+        disabled={disabled}
+        onChange={e => handleSearchChange(e.target.value)}
+        placeholder="Type at least 3 letters…"
+        autoComplete="off"
+        style={{ width: '100%', padding: '7px 10px', borderRadius: '6px', border: '1px solid rgb(222, 226, 230)', fontSize: '13px' }}
+      />
+      {searchLoading && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>Searching…</div>}
+
+      {accounts.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+          maxHeight: 400, overflowY: 'auto', marginTop: 4,
+        }}>
+          {accounts.map(a => {
+            const actId   = a.ActId  ?? a.actId;
+            const actName = a.ActName ?? a.actName;
+            const cty     = a.CityName ?? a.cityName;
+            return (
+              <div key={actId}
+                onClick={() => pick({ actId, actName })}
+                style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid var(--border)' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+                onMouseLeave={e => e.currentTarget.style.background = ''}>
+                <div style={{ fontWeight: 500 }}>{actName}</div>
+                {cty && <div style={{ fontSize: 11, color: 'var(--text3)' }}>{cty}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -275,9 +350,9 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
   const [actRows,        setActRows]        = useState([]);    // all rows for account
   const [orderFilter,    setOrderFilter]    = useState('');   // client-side order filter
   const [selectedOrder,  setSelectedOrder]  = useState(null); // chosen order { orderNo, orderId }
-  const [invoiceFilter,      setInvoiceFilter]      = useState('');   // client-side invoice filter
-  const [selectedInvoiceRef, setSelectedInvoiceRef] = useState(null); // chosen paymentReference
-  const [savingRef,          setSavingRef]          = useState(false);
+  const [invoiceFilter,       setInvoiceFilter]       = useState('');   // client-side invoice filter
+  const [selectedInvoiceRefs, setSelectedInvoiceRefs] = useState([]);   // chosen paymentReference(s)
+  const [savingRef,           setSavingRef]           = useState(false);
   const [installRows,    setInstallRows]    = useState(null);
   const [installLoading, setInstallLoading] = useState(false);
 
@@ -351,7 +426,7 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
     setOrderFilter('');
     setSelectedOrder(null);
     setInvoiceFilter('');
-    setSelectedInvoiceRef(null);
+    setSelectedInvoiceRefs([]);
     setInstallRows(null);
     setActLoading(true);
     setActRows([]);
@@ -369,11 +444,11 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
   async function handleSelectOrder(orderNo, orderId) {
     if (selectedOrder?.orderNo === orderNo) {
       // toggle off
-      setSelectedOrder(null); setInstallRows(null); setInvoiceFilter(''); setSelectedInvoiceRef(null); return;
+      setSelectedOrder(null); setInstallRows(null); setInvoiceFilter(''); setSelectedInvoiceRefs([]); return;
     }
     setSelectedOrder({ orderNo, orderId });
     setInvoiceFilter('');
-    setSelectedInvoiceRef(null);
+    setSelectedInvoiceRefs([]);
     setInstallLoading(true);
     setInstallRows(null);
     try {
@@ -491,7 +566,7 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
                 onChange={e => handleSearchChange(e.target.value)}
                 placeholder="Type at least 3 letters…"
                 autoComplete="off"
-                style={{ width: '100%' }}
+                style={{ width: '100%', padding: '7px 10px', borderRadius: '6px', border: '1px solid rgb(222, 226, 230)', fontSize: '13px' }}
               />
               {searchLoading && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>Searching…</div>}
 
@@ -583,31 +658,33 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
                 <PaymentTable
                   rows={selectedInvoiceRows}
                   selectable={!!voucherId}
-                  selectedRef={selectedInvoiceRef}
-                  onSelect={ref => setSelectedInvoiceRef(ref)}
+                  selectedRefs={selectedInvoiceRefs}
+                  onToggle={ref => setSelectedInvoiceRefs(prev =>
+                    prev.includes(ref) ? prev.filter(x => x !== ref) : [...prev, ref]
+                  )}
                 />
                 {invoiceFilter && selectedInvoiceRows.length === 0 && (
                   <div style={{ fontSize: 13, color: 'var(--text3)', padding: '6px 0' }}>No invoices match "{invoiceFilter}"</div>
                 )}
 
-                {/* Save selected payment reference to voucher */}
+                {/* Save selected payment reference(s) to voucher */}
                 {voucherId && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
-                    {selectedInvoiceRef ? (
+                    {selectedInvoiceRefs.length > 0 ? (
                       <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-                        Selected ref: <code style={{ background: 'var(--surface2)', padding: '1px 6px', borderRadius: 4 }}>{selectedInvoiceRef}</code>
+                        Selected ref{selectedInvoiceRefs.length > 1 ? 's' : ''}: <code style={{ background: 'var(--surface2)', padding: '1px 6px', borderRadius: 4 }}>{selectedInvoiceRefs.join(', ')}</code>
                       </div>
                     ) : (
-                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>Select an invoice row to link it to this voucher.</div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>Select one or more invoice rows to link them to this voucher.</div>
                     )}
                     <button
                       className="btn btn-sm btn-primary"
-                      disabled={!selectedInvoiceRef || savingRef}
+                      disabled={!selectedInvoiceRefs.length || savingRef}
                       onClick={async () => {
                         setSavingRef(true);
                         try {
-                          await api.put(`/vouchers/${voucherId}`, { payment_reference: selectedInvoiceRef });
-                          toast.success('Payment reference saved to voucher');
+                          await api.put(`/vouchers/${voucherId}`, { payment_reference: selectedInvoiceRefs.join(', ') });
+                          toast.success('Payment reference(s) saved to voucher');
                           onStatusSynced?.();   // re-fetch voucher in parent
                         } catch (err) {
                           toast.error(err.response?.data?.error || 'Failed to save');
@@ -616,7 +693,7 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
                         }
                       }}
                     >
-                      {savingRef ? 'Saving…' : '💾 Save Payment Reference'}
+                      {savingRef ? 'Saving…' : `💾 Save Payment Reference${selectedInvoiceRefs.length > 1 ? 's' : ''}`}
                     </button>
                   </div>
                 )}

@@ -128,7 +128,6 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
       ${row('Paid From', bankDisplay)}
       ${voucher.utr_no ? row('UTR / RRN', voucher.utr_no) : ''}
       ${row('Transaction Mode', 'NEFT')}
-      ${voucher.narration ? row('Payment Narration', voucher.narration, true) : ''}
     </table>
   </div>
 
@@ -136,8 +135,7 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
   <div style="margin:0 32px 32px;">
     <h3 style="font-size:15px;font-weight:700;margin:0 0 12px;color:#111827;">Bill Details</h3>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
-      <!-- ${voucher.payment_reference ? billRow('Bill ID', voucher.payment_reference) : ''} -->
-      ${voucher.narration ? billRow('Bill Narration', voucher.narration) : ''}
+      ${voucher.bill_ref_no ? billRow('Bill Ref No', voucher.bill_ref_no) : ''}
       ${billRow('Invoice Date', (voucher.bill_invoice_date || voucher.invoice_date) ? new Date(voucher.bill_invoice_date || voucher.invoice_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—')}
       ${billRow('Taxable Amount', '₹' + fmtAmt(taxable))}
       ${cgst > 0 ? billRow('CGST', '₹' + fmtAmt(cgst)) : ''}
@@ -169,8 +167,8 @@ function buildPaymentAdviceHTML(voucher, company, companyBank, personalNote = ''
 
 /**
  * Build the due-date reminder HTML email body.
- * @param {object} voucher  – voucher row (with supplier_name, due_date, total_amount, bill_ref_no)
- * @param {object} assignee – users row (name, email)
+ * @param {object} voucher  – voucher row (with id, supplier_name, due_date, total_amount, bill_ref_no)
+ * @param {object} assignee – users row (name, email, role)
  * @param {number} daysLeft – how many days until due_date
  */
 function buildDueReminderHTML(voucher, assignee, daysLeft) {
@@ -188,6 +186,11 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
 
   const urgencyColor = daysLeft <= 2 ? '#dc2626' : daysLeft <= 3 ? '#d97706' : '#059669';
   const urgencyLabel = daysLeft === 0 ? 'DUE TODAY' : daysLeft === 1 ? 'DUE TOMORROW' : `DUE IN ${daysLeft} DAYS`;
+
+  const roleBasePath = { admin: '/admin', executive: '/executive', approver: '/approver', manager: '/manager' }[assignee.role] || '/manager';
+  const voucherUrl = voucher.id
+    ? `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}${roleBasePath}/vouchers/${voucher.id}`
+    : null;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -216,6 +219,10 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
       <span style="font-size:13px;font-weight:600;color:#374151;">Voucher Details</span>
     </div>
     <table style="width:100%;border-collapse:collapse;">
+      ${voucher.voucher_no ? `<tr>
+        <td style="padding:12px 20px;color:#6b7280;font-size:13px;border-bottom:1px solid #f3f4f6;">Voucher No.</td>
+        <td style="padding:12px 20px;font-size:13px;font-weight:600;text-align:right;border-bottom:1px solid #f3f4f6;">${voucher.voucher_no}</td>
+      </tr>` : ''}
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;border-bottom:1px solid #f3f4f6;">Supplier</td>
         <td style="padding:12px 20px;font-size:13px;font-weight:600;text-align:right;border-bottom:1px solid #f3f4f6;">${voucher.supplier_name || '—'}</td>
@@ -226,7 +233,7 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
       </tr>
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;border-bottom:1px solid #f3f4f6;">Amount</td>
-        <td style="padding:12px 20px;font-size:13px;font-weight:700;text-align:right;border-bottom:1px solid #f3f4f6;">₹${fmtAmt(voucher.amount || voucher.bill_total_amount)}</td>
+        <td style="padding:12px 20px;font-size:13px;font-weight:700;text-align:right;border-bottom:1px solid #f3f4f6;">₹${fmtAmt(voucher.amount)}</td>
       </tr>
       <tr>
         <td style="padding:12px 20px;color:#6b7280;font-size:13px;">Due Date</td>
@@ -235,10 +242,18 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
     </table>
   </div>
 
+  ${voucherUrl ? `
+  <!-- Review link -->
+  <div style="text-align:center;margin:0 32px 32px;">
+    <a href="${voucherUrl}" style="display:inline-block;background:${urgencyColor};color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:12px 32px;border-radius:8px;">
+      Review Voucher →
+    </a>
+  </div>` : ''}
+
   <!-- Footer -->
   <div style="background:#f9fafb;padding:20px 32px;text-align:center;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;line-height:1.8;">
     This is an automated reminder from the Accounts Payable system.<br>
-    Please log in to review and process this voucher.
+    ${voucherUrl ? 'Click the button above to review and process this voucher.' : 'Please log in to review and process this voucher.'}
   </div>
 
 </div>
@@ -246,4 +261,49 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
 </html>`;
 }
 
-module.exports = { sendMail, buildPaymentAdviceHTML, buildDueReminderHTML };
+/**
+ * Build the password reset email body.
+ * @param {object} user     – users row (name)
+ * @param {string} resetUrl – full link to the frontend reset-password page with token
+ */
+function buildPasswordResetHTML(user, resetUrl) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
+<div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+
+  <!-- Header -->
+  <div style="padding:36px 32px 20px;text-align:center;">
+    <p style="margin:0 0 6px;font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;">PayPro Account Security</p>
+    <h2 style="margin:0;font-size:22px;font-weight:700;color:#111827;">Reset your password</h2>
+    <p style="margin:10px 0 0;color:#6b7280;font-size:14px;line-height:1.6;">
+      Hi ${user.name || ''}, we received a request to reset your password. Click the button below to choose a new one.
+      This link expires in 1 hour and can only be used once.
+    </p>
+  </div>
+
+  <!-- Button -->
+  <div style="text-align:center;margin:8px 32px 32px;">
+    <a href="${resetUrl}" style="display:inline-block;background:#111827;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:12px 32px;border-radius:8px;">
+      Reset Password →
+    </a>
+  </div>
+
+  <!-- Fallback link -->
+  <div style="margin:0 32px 32px;padding:14px 18px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+    <p style="margin:0 0 6px;font-size:12px;color:#6b7280;">Button not working? Copy and paste this link into your browser:</p>
+    <p style="margin:0;font-size:12px;color:#374151;word-break:break-all;">${resetUrl}</p>
+  </div>
+
+  <!-- Footer -->
+  <div style="background:#f9fafb;padding:20px 32px;text-align:center;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;line-height:1.8;">
+    If you didn't request this, you can safely ignore this email — your password won't change.
+  </div>
+
+</div>
+</body>
+</html>`;
+}
+
+module.exports = { sendMail, buildPaymentAdviceHTML, buildDueReminderHTML, buildPasswordResetHTML };

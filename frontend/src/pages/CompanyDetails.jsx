@@ -3,18 +3,25 @@ import api from '../api/client';
 import Layout from '../components/Layout';
 import toast from 'react-hot-toast';
 
-const emptyBank = { bank_name: '', account_name: '', account_number: '', ifsc_code: '', branch_name: '', is_primary: false };
+const emptyBank = { bank_name: '', account_name: '', account_number: '', ifsc_code: '', branch_name: '', is_primary: false, purchase_type_det_id: '' };
 const emptyForm = { company_name: '', address: '', tel: '', banks: [{ ...emptyBank, is_primary: true }] };
 
 export default function CompanyDetails() {
-  const [companies, setCompanies] = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [showForm, setShowForm]   = useState(false);
-  const [editId, setEditId]       = useState(null);
-  const [form, setForm]           = useState(emptyForm);
-  const [saving, setSaving]       = useState(false);
+  const [companies, setCompanies]     = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [showForm, setShowForm]       = useState(false);
+  const [editId, setEditId]           = useState(null);
+  const [form, setForm]               = useState(emptyForm);
+  const [saving, setSaving]           = useState(false);
+  const [purchaseTypes, setPurchaseTypes] = useState([]);
 
-  useEffect(() => { fetchCompanies(); }, []);
+  useEffect(() => {
+    fetchCompanies();
+    api.get('/parameters').then(r => {
+      const pt = r.data.parameters?.find(p => p.parametertext === 'Purchase Type');
+      setPurchaseTypes(pt?.details || []);
+    }).catch(() => {});
+  }, []);
 
   async function fetchCompanies() {
     try {
@@ -36,7 +43,7 @@ export default function CompanyDetails() {
       company_name: c.company_name,
       address: c.address || '',
       tel: c.tel || '',
-      banks: c.banks?.length ? c.banks.map(b => ({ ...b })) : [{ ...emptyBank, is_primary: true }],
+      banks: c.banks?.length ? c.banks.map(b => ({ ...b, purchase_type_det_id: b.purchase_type_det_id || '' })) : [{ ...emptyBank, is_primary: true }],
     });
     setShowForm(true);
   }
@@ -174,6 +181,17 @@ export default function CompanyDetails() {
                         <input value={b.branch_name} onChange={e => setBank(i, 'branch_name', e.target.value)} placeholder="Andheri East" />
                       </div>
                     </div>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>Purchase Type <span style={{ color: 'var(--text3)', fontSize: 11 }}>(auto-selects this bank on bill)</span></label>
+                        <select value={b.purchase_type_det_id || ''} onChange={e => setBank(i, 'purchase_type_det_id', e.target.value ? Number(e.target.value) : '')}>
+                          <option value="">— None —</option>
+                          {purchaseTypes.map(pt => (
+                            <option key={pt.parameterdetid} value={pt.parameterdetid}>{pt.parametervalues}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -214,7 +232,7 @@ export default function CompanyDetails() {
                 <div className="table-wrap">
                   <table>
                     <thead>
-                      <tr><th>Bank</th><th>Account Holder</th><th>Account No.</th><th>IFSC</th><th>Branch</th><th></th></tr>
+                      <tr><th>Bank</th><th>Account Holder</th><th>Account No.</th><th>IFSC</th><th>Branch</th><th>Purchase Type</th><th></th></tr>
                     </thead>
                     <tbody>
                       {c.banks.map(b => (
@@ -224,6 +242,7 @@ export default function CompanyDetails() {
                           <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{b.account_number}</td>
                           <td style={{ color: 'var(--text3)', fontSize: 12 }}>{b.ifsc_code}</td>
                           <td style={{ color: 'var(--text3)' }}>{b.branch_name}</td>
+                          <td>{b.purchase_type_label ? <span className="badge">{b.purchase_type_label}</span> : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
                           <td>
                             {b.is_primary && <span className="badge badge-approved">Primary</span>}
                           </td>

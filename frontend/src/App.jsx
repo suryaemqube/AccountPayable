@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import AdminDashboard from './pages/AdminDashboard';
 import VoucherList from './pages/VoucherList';
 import ManagerDashboard from './pages/ManagerDashboard';
@@ -22,7 +24,7 @@ import './index.css';
 function roleHome(role) {
   if (role === 'admin')     return '/admin';
   if (role === 'executive') return '/executive';
-  if (role === 'approver')  return '/approver/vouchers';
+  if (role === 'approver')  return '/approver/my-queue';
   return '/manager';
 }
 
@@ -49,6 +51,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
 
           {/* Admin routes */}
           <Route path="/admin" element={<RequireAuth roles={['admin']}><AdminDashboard /></RequireAuth>} />
@@ -80,6 +84,7 @@ export default function App() {
           <Route path="/executive/change-password" element={<RequireAuth roles={['executive']}><ChangePassword /></RequireAuth>} />
 
           {/* Approver routes */}
+          <Route path="/approver/my-queue" element={<RequireAuth roles={['approver']}><ManagerDashboard /></RequireAuth>} />
           <Route path="/approver/supplier-master" element={<RequireAuth roles={['approver']}><SupplierMaster /></RequireAuth>} />
           <Route path="/approver/bills"     element={<RequireAuth roles={['approver']}><BillList /></RequireAuth>} />
           <Route path="/approver/bills/:id" element={<RequireAuth roles={['approver']}><BillDetail /></RequireAuth>} />

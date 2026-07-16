@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 const { extractInvoiceData } = require('../utils/claudeOcr');
-const { generateVoucherPDF, generateAndSaveVoucherPDF } = require('../utils/pdfGenerator');
-const { buildPaymentAdviceHTML, sendMail } = require('../utils/emailService');
+const { generateAndSaveVoucherPDF } = require('../utils/pdfGenerator');
+const { buildPaymentAdviceHTML, buildDueReminderHTML, sendMail } = require('../utils/emailService');
 const paramCache = require('../utils/parameterCache');
 const axios = require('axios');
 const path = require('path');
@@ -9,6 +9,7 @@ const fs = require('fs');
 
 const VOUCHERS_DIR = path.join(__dirname, '../../vouchers');
 const { logActivity } = require('../utils/activityLog');
+const { notify } = require('../utils/notify');
 const VS = require('../constants/voucherStatus');
 
 // ── Common SELECT fragment ─────────────────────────────────────────────────
@@ -21,8 +22,8 @@ const VOUCHER_SELECT = `
     bs.supplier_name,
     bs.gstin AS supplier_gstin,
     CASE
-      WHEN v.assigned_at IS NOT NULL AND b.due_days IS NOT NULL
-      THEN (v.assigned_at::date + b.due_days)
+      WHEN v.assigned_at IS NOT NULL AND COALESCE(v.due_days, b.due_days) IS NOT NULL
+      THEN (v.assigned_at::date + COALESCE(v.due_days, b.due_days))
       ELSE NULL
     END AS due_date,
     b.bill_no,
@@ -35,12 +36,16 @@ const VOUCHER_SELECT = `
     b.sgst              AS bill_sgst,
     b.igst              AS bill_igst,
     b.tds_amount        AS bill_tds_amount,
+    b.credit_note_amount AS bill_credit_note_amount,
     b.total_amount      AS bill_total_amount,
     b.narration         AS bill_narration,
     b.payment_reference AS bill_payment_reference,
     b.supplier_id       AS bill_supplier_id,
     b.company_bank_id   AS bill_company_bank_id,
     b.due_days          AS bill_due_days,
+    pt.parametervalues  AS bill_purchase_type_label,
+    pt.code             AS bill_purchase_type_code,
+    b.salespro_act_name AS bill_salespro_act_name,
     COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount
   FROM vouchers v
   LEFT JOIN users u1      ON v.created_by  = u1.id
@@ -49,6 +54,7 @@ const VOUCHER_SELECT = `
   LEFT JOIN parameter_details pdp ON pdp.parameterdetid = v.payment_status_det_id
   LEFT JOIN bills b       ON b.id = v.bill_id
   LEFT JOIN suppliers bs  ON bs.id = b.supplier_id
+  LEFT JOIN parameter_details pt ON pt.parameterdetid = b.purchase_type_det_id
 `;
 
 // ── Short helpers ──────────────────────────────────────────────────────────
@@ -169,6 +175,11 @@ async function uploadAndScan(req, res) {
 
       await client.query('COMMIT');
       await logActivity(voucher.id, req.user.id, 'created', 'Voucher created via invoice upload');
+      notify({
+        type: 'voucher_created',
+        message: `New voucher created via invoice upload by ${req.user.name}`,
+        entity_type: 'voucher', entity_id: voucher.id, created_by: req.user.id,
+      });
       // Re-fetch with JOINs so response includes status/payment_status strings
       const full = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [voucher.id]);
       res.status(201).json({ voucher: full.rows[0], line_items: extracted.line_items || [] });
@@ -285,6 +296,11 @@ async function createVoucher(req, res) {
     );
     const newId = result.rows[0].id;
     await logActivity(newId, req.user.id, 'created', `Voucher ${voucher_no} created`);
+    notify({
+      type: 'voucher_created',
+      message: `New voucher #${voucher_no} created by ${req.user.name}`,
+      entity_type: 'voucher', entity_id: newId, created_by: req.user.id,
+    });
     res.status(201).json({ id: newId, voucher_no });
   } catch (err) {
     console.error('createVoucher error:', err);
@@ -294,7 +310,7 @@ async function createVoucher(req, res) {
 
 async function updateVoucher(req, res) {
   const { id } = req.params;
-  const { narration, amount } = req.body;
+  const { narration, amount, payment_mode, due_days } = req.body;
 
   try {
     const existing = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
@@ -308,11 +324,14 @@ async function updateVoucher(req, res) {
 
     await pool.query(
       `UPDATE vouchers SET
-        narration = COALESCE($1, narration),
-        amount    = COALESCE($2, amount),
-        updated_at = NOW()
-       WHERE id = $3`,
-      [narration ?? null, amount != null ? Number(amount) : null, id]
+        narration    = COALESCE($1, narration),
+        amount       = COALESCE($2, amount),
+        payment_mode = COALESCE($3, payment_mode),
+        due_days     = COALESCE($4, due_days),
+        updated_at   = NOW()
+       WHERE id = $5`,
+      [narration ?? null, amount != null ? Number(amount) : null, payment_mode ?? null,
+       due_days != null ? Number(due_days) : null, id]
     );
 
     res.json({ message: 'Voucher updated' });
@@ -328,22 +347,93 @@ async function assignVoucher(req, res) {
   if (!manager_id) return res.status(400).json({ error: 'manager_id required' });
 
   try {
-    const managerIds = await paramCache.allDetIds('User Role', ['manager', 'executive']);
+    const managerIds = await paramCache.allDetIds('User Role', ['manager', 'executive', 'approver']);
     const mgr = await pool.query(
       'SELECT id, name FROM users WHERE id=$1 AND role_det_id=ANY($2) AND is_active=true',
       [manager_id, managerIds]
     );
-    if (!mgr.rows.length) return res.status(404).json({ error: 'Manager not found' });
+    if (!mgr.rows.length) return res.status(404).json({ error: 'Manager or approver not found' });
 
     const statusId = await sid(VS.ASSIGNED);
-    await pool.query(
-      'UPDATE vouchers SET assigned_to=$1, status_det_id=$2, assigned_at=NOW(), updated_at=NOW() WHERE id=$3',
+    const updated = await pool.query(
+      'UPDATE vouchers SET assigned_to=$1, status_det_id=$2, assigned_at=NOW(), updated_at=NOW() WHERE id=$3 RETURNING voucher_no',
       [manager_id, statusId, id]
     );
     const mgrName = mgr.rows[0]?.name || manager_id;
+    const voucherLabel = updated.rows[0]?.voucher_no ? `Voucher #${updated.rows[0].voucher_no}` : 'Voucher';
     await logActivity(id, req.user.id, 'assigned', `Assigned to ${mgrName}`,
       { manager_id, manager_name: mgrName });
-    res.json({ message: 'Voucher assigned' });
+    notify({
+      type: 'voucher_assigned',
+      message: `${voucherLabel} assigned to ${mgrName} by ${req.user.name}`,
+      entity_type: 'voucher', entity_id: id, created_by: req.user.id,
+    });
+
+    // Immediate "due today" notification — invoice date is today AND credit days is
+    // 0 or not set at all (treated the same as 0 — pay right away), so this can't
+    // wait for the next 8 AM due-reminder run.
+    // due_today_mail on the response / activity log tells the caller what happened,
+    // since this send is otherwise silent (fire-and-forget so a mail issue never
+    // blocks the assignment itself).
+    let due_today_mail = 'not_applicable';
+    try {
+      const dueRes = await pool.query(
+        `SELECT v.id, v.voucher_no, v.amount, v.assigned_at,
+                COALESCE(v.due_days, b.due_days, 0) AS due_days,
+                b.bill_ref_no, b.payment_reference,
+                s.supplier_name,
+                u.email AS assignee_email, u.name AS assignee_name,
+                pdrole.code AS assignee_role
+         FROM vouchers v
+         LEFT JOIN bills     b ON b.id = v.bill_id
+         LEFT JOIN suppliers s ON s.id = b.supplier_id
+         JOIN users u ON u.id = v.assigned_to
+         LEFT JOIN parameter_details pdrole ON pdrole.parameterdetid = u.role_det_id
+         WHERE v.id = $1
+           AND b.invoice_date = CURRENT_DATE
+           AND COALESCE(v.due_days, b.due_days, 0) = 0`,
+        [id]
+      );
+      const row = dueRes.rows[0];
+      if (row) {
+        if (!row.assignee_email) {
+          due_today_mail = 'failed';
+          await logActivity(id, req.user.id, 'notification', `Due-today email NOT sent — ${mgrName} has no email on file`);
+        } else {
+          const html = buildDueReminderHTML(
+            {
+              id:                row.id,
+              voucher_no:        row.voucher_no,
+              supplier_name:     row.supplier_name,
+              bill_ref_no:       row.bill_ref_no,
+              payment_reference: row.payment_reference,
+              amount:            row.amount,
+              assigned_at:       row.assigned_at,
+              due_days:          row.due_days,
+            },
+            { name: row.assignee_name, email: row.assignee_email, role: row.assignee_role },
+            0
+          );
+          const fmtSubAmt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const voucherLabel = row.voucher_no ? `Voucher #${row.voucher_no}` : 'Voucher';
+          const subject = `🔴 Due TODAY: ${voucherLabel} from ${row.supplier_name || 'Supplier'} — ₹${fmtSubAmt(row.amount)}`;
+          try {
+            await sendMail({ to: row.assignee_email, subject, html });
+            due_today_mail = 'sent';
+            await logActivity(id, req.user.id, 'notification', `Due-today email sent to ${row.assignee_email}`);
+            console.log(`[AssignVoucher] Due-today mail sent for voucher ${id} to ${row.assignee_email}`);
+          } catch (mailErr) {
+            due_today_mail = 'failed';
+            await logActivity(id, req.user.id, 'notification', `Due-today email FAILED to send to ${row.assignee_email}: ${mailErr.message}`);
+            console.error(`[AssignVoucher] Immediate due-today mail failed for voucher ${id}:`, mailErr.message);
+          }
+        }
+      }
+    } catch (mailErr) {
+      console.error(`[AssignVoucher] Due-today mail check failed for voucher ${id}:`, mailErr.message);
+    }
+
+    res.json({ message: 'Voucher assigned', due_today_mail });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -371,7 +461,7 @@ async function managerAction(req, res) {
       [newStatusId, action === 'reject' ? (rejected_reason || comment) : null, id]
     );
     await logActivity(id, req.user.id, 'status_changed',
-      action === 'approve' ? 'Approved by manager' : `Rejected: ${rejected_reason || comment || ''}`,
+      action === 'approve' ? `Approved by ${req.user.role}` : `Rejected: ${rejected_reason || comment || ''}`,
       { from: VS.ASSIGNED, to: newCode });
     if (comment && action === 'approve') {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
@@ -456,13 +546,26 @@ async function updateUtr(req, res) {
   if (!utr_no?.trim()) return res.status(400).json({ error: 'UTR number is required' });
   try {
     const vResult = await pool.query(
-      `SELECT v.id, pd.code AS status FROM vouchers v
+      `SELECT v.id, v.bill_id, pd.code AS status FROM vouchers v
        LEFT JOIN parameter_details pd ON pd.parameterdetid = v.status_det_id
        WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     if (vResult.rows[0].status !== VS.READY_TO_REMIT) return res.status(400).json({ error: 'Voucher must be in Ready to Remit status to enter UTR' });
-    await pool.query('UPDATE vouchers SET utr_no=$1, updated_at=NOW() WHERE id=$2', [utr_no.trim(), id]);
-    res.json({ message: 'UTR saved', utr_no: utr_no.trim() });
+
+    // Match the bank-file import behavior: entering a UTR marks the voucher Paid.
+    const paidId = await sid(VS.PAID);
+    await pool.query('UPDATE vouchers SET utr_no=$1, status_det_id=$2, paid_at=NOW(), updated_at=NOW() WHERE id=$3', [utr_no.trim(), paidId, id]);
+    await logActivity(id, req.user.id, 'status_changed', 'Marked as Paid — UTR entered manually',
+      { from: VS.READY_TO_REMIT, to: VS.PAID });
+
+    // The bill's own status (Open/Partially Paid/Fully Paid) is derived from
+    // its vouchers' paid amounts — recompute it now that this one is Paid.
+    if (vResult.rows[0].bill_id) {
+      const { refreshBillStatus } = require('./bills');
+      await refreshBillStatus(vResult.rows[0].bill_id);
+    }
+
+    res.json({ message: 'UTR saved', utr_no: utr_no.trim(), status: VS.PAID });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -527,7 +630,13 @@ async function generateVoucher(req, res) {
       const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [bankId]);
       companyBank = bk.rows[0] || null;
     }
+    if (!companyBank) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE is_primary=true LIMIT 1');
+      companyBank = bk.rows[0] || null;
+      console.log('Generating voucher PDF for voucher:', companyBank);
+    }
     voucher.voucher_no = await ensureVoucherNo(id, voucher.voucher_no);
+    
     const { fileName, voucherNo } = await generateAndSaveVoucherPDF(voucher, comments.rows, companyBank);
     await pool.query('UPDATE vouchers SET voucher_pdf_path=$1, voucher_no=$2, updated_at=NOW() WHERE id=$3',
       [fileName, voucherNo, id]);
@@ -557,6 +666,10 @@ async function downloadVoucher(req, res) {
     const bankId = voucher.bill_company_bank_id || voucher.company_bank_id;
     if (bankId) {
       const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [bankId]);
+      companyBank = bk.rows[0] || null;
+    }
+    if (!companyBank) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE is_primary=true LIMIT 1');
       companyBank = bk.rows[0] || null;
     }
 
@@ -714,47 +827,85 @@ async function exportVouchers(req, res) {
     );
     const debitAccNo = companyBankRes.rows[0]?.account_number || '';
 
-    const readyId = await sid(VS.REVIEWED);
+    // Allow exporting vouchers that are Reviewed or already Exported (re-export).
+    const [reviewedId, exportedStatusId] = await Promise.all([sid(VS.REVIEWED), sid(VS.EXPORTED)]);
+    const allowedStatusIds = [reviewedId, exportedStatusId];
     let query, params;
     if (ids && ids.length) {
-      query  = `${VOUCHER_SELECT} WHERE v.id=ANY($1) AND v.status_det_id=$2`;
-      params = [ids, readyId];
+      query  = `${VOUCHER_SELECT} WHERE v.id=ANY($1) AND v.status_det_id=ANY($2)`;
+      params = [ids, allowedStatusIds];
     } else {
-      query  = `${VOUCHER_SELECT} WHERE v.status_det_id=$1`;
-      params = [readyId];
+      query  = `${VOUCHER_SELECT} WHERE v.status_det_id=ANY($1)`;
+      params = [allowedStatusIds];
     }
     const vRes = await pool.query(query, params);
-    if (!vRes.rows.length) return res.status(400).json({ error: 'No reviewed vouchers found for export' });
+    if (!vRes.rows.length) return res.status(400).json({ error: 'No exportable vouchers found for export' });
 
     const XLSX = require('xlsx');
     const today = new Date();
-    const pymt_date = `${String(today.getDate()).padStart(2,'0')}/${String(today.getMonth()+1).padStart(2,'0')}/${today.getFullYear()}`;
+    const pymt_date = `${String(today.getDate()).padStart(2,'0')}-${String(today.getMonth()+1).padStart(2,'0')}-${today.getFullYear()}`;
 
     const rows = [];
     const exportedIds = [];
 
     for (const v of vRes.rows) {
       let bene_acc = '', bene_ifsc = '', bnf_name = v.supplier_name || '';
-      if (v.supplier_id) {
-        const sbRes = await pool.query(
-          'SELECT account_holder_name, account_number, ifsc_code FROM supplier_bank_details WHERE supplier_id=$1 AND is_primary=true LIMIT 1',
-          [v.supplier_id]
-        );
+      let suppMobile = '', suppEmail = '', nameForBank = '';
+
+      const supplierId = v.bill_supplier_id || v.supplier_id;
+      if (supplierId) {
+        const [sbRes, scRes, sRes] = await Promise.all([
+          pool.query(
+            'SELECT account_holder_name, account_number, ifsc_code FROM supplier_bank_details WHERE supplier_id=$1 AND is_primary=true LIMIT 1',
+            [supplierId]
+          ),
+          pool.query(
+            'SELECT mobile, email FROM supplier_contacts WHERE supplier_id=$1 AND is_primary=true LIMIT 1',
+            [supplierId]
+          ),
+          pool.query('SELECT name_for_bank FROM suppliers WHERE id=$1', [supplierId]),
+        ]);
         if (sbRes.rows.length) {
           bene_acc  = sbRes.rows[0].account_number || '';
           bene_ifsc = sbRes.rows[0].ifsc_code || '';
-          bnf_name  = sbRes.rows[0].account_holder_name || v.supplier_name || '';
+          bnf_name  = sbRes.rows[0].account_holder_name || '';
         }
+        if (scRes.rows.length) {
+          suppMobile = scRes.rows[0].mobile || '';
+          suppEmail  = scRes.rows[0].email  || '';
+        }
+        nameForBank = sRes.rows[0]?.name_for_bank || v.supplier_name?.trim().split(/\s+/)[0] || '';
       }
+
+      // Use voucher payment_mode → bill payment_mode → default NEFT
+      const pymtMode = v.payment_mode || 'NEFT';
+
+      // Use bill's company bank if set, else primary
+      let debitAcc = debitAccNo;
+      if (v.bill_company_bank_id) {
+        const bkRes = await pool.query('SELECT account_number FROM company_bank_accounts WHERE id=$1', [v.bill_company_bank_id]);
+        if (bkRes.rows.length) debitAcc = bkRes.rows[0].account_number || debitAccNo;
+      }
+
+      // REMARK: strip special chars, keep only alphanumeric
+      const rawRemark = v.bill_ref_no || v.bill_payment_reference || v.voucher_no || '';
+      const remark = rawRemark.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
       rows.push({
-        PYMT_PROD_TYPE_CODE: 'PAB_VENDOR', PYMT_MODE: 'NEFT',
-        DEBIT_ACC_NO: debitAccNo, BNF_NAME: bnf_name,
-        BENE_ACC_NO: bene_acc, BENE_IFSC: bene_ifsc,
-        AMOUNT: Number(v.amount) || Number(v.bill_total_amount) || 0,
-        DEBIT_NARR: v.supplier_name || '', CREDIT_NARR: v.supplier_name || '',
-        MOBILE_NUM: admin.mobile_no || '', EMAIL_ID: admin.email || '',
-        REMARK: v.bill_ref_no || v.bill_payment_reference || '', PYMT_DATE: pymt_date,
-        REF_NO: 'Na', ADDL_INFO1: '', ADDL_INFO2: '', ADDL_INFO3: '', ADDL_INFO4: '', ADDL_INFO5: '',
+        PYMT_PROD_TYPE_CODE: 'PAB_VENDOR',
+        PYMT_MODE:   pymtMode,
+        DEBIT_ACC_NO: debitAcc,
+        BNF_NAME:    bnf_name,
+        BENE_ACC_NO: bene_acc,
+        BENE_IFSC:   bene_ifsc,
+        AMOUNT:      Number(v.amount) || Number(v.bill_total_amount) || 0,
+        DEBIT_NARR:  nameForBank,
+        CREDIT_NARR: nameForBank,
+        MOBILE_NUM:  suppMobile,
+        EMAIL_ID:    suppEmail,
+        REMARK:      remark,
+        PYMT_DATE:   pymt_date,
+        REFNO: 'Na', ADDL_INFO1: '', ADDL_INFO2: '', ADDL_INFO3: '', ADDL_INFO4: '', ADDL_INFO5: '',
       });
       exportedIds.push(v.id);
     }
@@ -763,11 +914,17 @@ async function exportVouchers(req, res) {
     await pool.query('UPDATE vouchers SET status_det_id=$1, updated_at=NOW() WHERE id=ANY($2)',
       [exportedId, exportedIds]);
 
+    for (const vid of exportedIds) {
+      await logActivity(vid, req.user.id, 'status_changed', 'Exported for bank upload',
+        { from: VS.REVIEWED, to: VS.EXPORTED });
+    }
+
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'BankUpload');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    const filename = `bank-upload-${today.toISOString().slice(0,10)}.xlsx`;
+    const hhmm = `${String(today.getHours()).padStart(2,'0')}${String(today.getMinutes()).padStart(2,'0')}${String(today.getSeconds()).padStart(2,'0')}`;
+    const filename = `bank-upload-${today.toISOString().slice(0,10)}-${hhmm}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);
@@ -866,7 +1023,7 @@ async function sendAdviceEmail(req, res) {
     const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
     if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
     const voucher = vResult.rows[0];
-    if (voucher.status !== VS.EXPORTED) return res.status(400).json({ error: 'Voucher must be exported before final approval' });
+    if (![VS.EXPORTED, VS.READY_TO_REMIT, VS.PAID].includes(voucher.status)) return res.status(400).json({ error: 'Voucher must be exported before sending payment advice' });
 
     let finalHtml = html;
     if (!finalHtml) {
@@ -882,18 +1039,54 @@ async function sendAdviceEmail(req, res) {
 
     await sendMail({ to, cc: cc || [], bcc: bcc || [], subject, html: finalHtml });
 
-    const approvedId = await sid('approved');
-    await pool.query('UPDATE vouchers SET status_det_id=$1, updated_at=NOW() WHERE id=$2',
-      [approvedId, id]);
+    const toList = Array.isArray(to) ? to.join(', ') : to;
+    await logActivity(id, req.user.id, 'email_sent', `Payment advice sent`,
+      { to, cc: cc || [], bcc: bcc || [] });
+
     if (comment) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
 
-    res.json({ message: 'Payment advice sent and voucher approved', status: 'approved' });
+    res.json({ message: 'Payment advice sent' });
   } catch (err) {
     console.error('sendAdviceEmail error:', err);
     res.status(500).json({ error: 'Failed to send email: ' + err.message });
+  }
+}
+
+async function previewHtml(req, res) {
+  const { id } = req.params;
+  const { buildVoucherHtml } = require('../utils/pdfGenerator');
+  try {
+    const vResult = await pool.query(`${VOUCHER_SELECT} WHERE v.id=$1`, [id]);
+    if (!vResult.rows.length) return res.status(404).json({ error: 'Voucher not found' });
+    const voucher = vResult.rows[0];
+
+    const comments = await pool.query(
+      `SELECT vc.*, u.name AS user_name, pd.code AS role
+       FROM voucher_comments vc JOIN users u ON vc.user_id=u.id
+       LEFT JOIN parameter_details pd ON pd.parameterdetid=u.role_det_id
+       WHERE vc.voucher_id=$1 ORDER BY vc.created_at`, [id]);
+
+    let companyBank = null;
+    const bankId = voucher.bill_company_bank_id || voucher.company_bank_id;
+    if (bankId) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE id=$1', [bankId]);
+      companyBank = bk.rows[0] || null;
+    }
+    if (!companyBank) {
+      const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE is_primary=true LIMIT 1');
+      companyBank = bk.rows[0] || null;
+    }
+
+    const voucherNo = voucher.voucher_no || 'PREVIEW';
+    const html = buildVoucherHtml(voucher, [], comments.rows, voucherNo, companyBank);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (err) {
+    console.error('previewHtml error:', err);
+    res.status(500).json({ error: err.message });
   }
 }
 
@@ -903,4 +1096,5 @@ module.exports = {
   addComment, generateVoucher, downloadVoucher, getInvoiceFile,
   uploadAttachments, getAttachmentFile, deleteAttachment,
   exportVouchers, syncPaymentStatus, emailPreview, sendAdviceEmail, updateUtr,
+  previewHtml,
 };

@@ -100,7 +100,7 @@ export default function EmailModal({ voucherId, onClose, onSent }) {
       await api.post(`/vouchers/${voucherId}/send-payment-advice`, {
         to, cc, bcc, subject, html, comment,
       });
-      toast.success('Payment advice sent & voucher approved!');
+      toast.success('Payment advice sent');
       onSent();
       onClose();
     } catch (err) {

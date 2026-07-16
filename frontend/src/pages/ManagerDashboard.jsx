@@ -3,7 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import Layout from '../components/Layout';
 import { StatusBadge, PaymentBadge, fmt, fmtDate } from '../components/Helpers';
+import { VS } from '../constants/voucherStatus';
+import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+
+const STATUS_OPTIONS = [
+  { value: 'all',              label: 'All' },
+  { value: VS.ASSIGNED,        label: 'Assigned' },
+  { value: VS.APPROVED,        label: 'Approved' },
+  { value: VS.REVIEWED,        label: 'Reviewed' },
+  { value: VS.EXPORTED,        label: 'Exported' },
+  { value: VS.READY_TO_REMIT,  label: 'Ready to Remit' },
+  { value: VS.PAID,            label: 'Paid' },
+  { value: VS.REJECTED,        label: 'Rejected' },
+];
 
 function getDueSeverity(due_date) {
   if (!due_date) return null;
@@ -18,27 +31,47 @@ function getDueSeverity(due_date) {
 }
 
 export default function ManagerDashboard() {
+  const { user } = useAuth();
   const [vouchers, setVouchers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filterStatus, setFilterStatus] = useState(VS.ASSIGNED);
   const nav = useNavigate();
+  const basePath = user?.role === 'approver' ? '/approver' : '/manager';
 
   useEffect(() => {
     api.get('/vouchers')
-      .then(r => setVouchers(r.data.vouchers))
+      .then(r => {
+        // Manager is already scoped server-side to their own vouchers; approver
+        // sees all vouchers by default (needed for verify/final-approval), so
+        // scope to "assigned to me" here too — this page is only "my" queue.
+        const mine = (r.data.vouchers || []).filter(v => v.assigned_to === user?.id);
+        setVouchers(mine);
+      })
       .catch(() => toast.error('Failed to load'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [user?.id]);
 
-  const pending  = vouchers.filter(v => v.status === 'assigned');
+  const pending  = vouchers.filter(v => v.status === VS.ASSIGNED);
   const dueSoon  = pending.filter(v => getDueSeverity(v.due_date) !== null);
-  const reviewed = vouchers.filter(v => !['assigned', 'draft'].includes(v.status));
+  const filtered = filterStatus === 'all' ? vouchers : vouchers.filter(v => v.status === filterStatus);
 
   return (
     <Layout>
       <div style={{ padding: 28 }}>
-        <div style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 2 }}>My Approval Queue</h1>
-          <div style={{ color: 'var(--text3)', fontSize: 13 }}>{pending.length} voucher{pending.length !== 1 ? 's' : ''} awaiting your review</div>
+        <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'start', marginBottom: 24, flexWrap: 'wrap', gap: 100 }}>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 2 }}>My Approval Queue</h1>
+            <div style={{ color: 'var(--text3)', fontSize: 13 }}>{pending.length} voucher{pending.length !== 1 ? 's' : ''} awaiting your review</div>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: 4 }}>
+              Status
+            </label>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+              style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, background: 'var(--bg)', color: 'var(--text)' }}>
+              {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
         </div>
 
         {/* ── Due-soon alert strip ── */}
@@ -60,36 +93,26 @@ export default function ManagerDashboard() {
           </div>
         )}
 
-        {pending.length > 0 && (
-          <div style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--amber)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--amber-m)', display: 'inline-block' }}></span>
-              Pending review
-            </div>
+        {filtered.length > 0 && (
+          <div>
             <div className="card">
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Voucher No.</th><th>Bill Ref No.</th><th>Supplier</th><th>Bill Date</th><th>Amount</th><th>Due Date</th><th>Payment</th><th></th></tr>
+                    <tr><th>Voucher No.</th><th>Bill Ref No.</th><th>Supplier</th><th>Bill Date</th><th>Amount</th><th>Due Date</th><th>Payment (SalesPro)</th><th>Status</th><th>Created By</th><th></th></tr>
                   </thead>
                   <tbody>
-                    {pending.map(v => {
-                      const sev = getDueSeverity(v.due_date);
-                      const finalAmt = (parseFloat(v.total_amount) || 0) - (parseFloat(v.balance_amount) || 0);
+                    {filtered.map(v => {
+                      const sev = v.status === VS.ASSIGNED ? getDueSeverity(v.due_date) : null;
                       return (
                         <tr key={v.id} style={{ cursor: 'pointer', background: sev ? sev.bg : undefined }}
-                          onClick={() => nav(`/manager/vouchers/${v.id}`)}>
+                          onClick={() => nav(`${basePath}/vouchers/${v.id}`)}>
                           <td><span className="mono">{v.voucher_no || v.tally_vch_no || '—'}</span></td>
                           <td><span className="mono">{v.invoice_no || v.bill_ref_no || '—'}</span></td>
                           <td style={{ fontWeight: 500 }}>{v.supplier_name || '—'}</td>
-                          <td>{fmtDate(v.invoice_date)}</td>
+                          <td>{fmtDate(v.bill_invoice_date)}</td>
                           <td>
-                            <span className="mono">{fmt(v.total_amount)}</span>
-                            {parseFloat(v.balance_amount) > 0 && (
-                              <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>
-                                Pay: {fmt(finalAmt)}
-                              </div>
-                            )}
+                            <span className="mono">{fmt(v.amount)}</span>
                           </td>
                           <td>
                             {v.due_date ? (
@@ -105,9 +128,12 @@ export default function ManagerDashboard() {
                             ) : '—'}
                           </td>
                           <td><PaymentBadge status={v.payment_status} /></td>
+                          <td><StatusBadge status={v.status} /></td>
+                          <td>{v.created_by_name || '—'}</td>
                           <td>
-                            <button className="btn btn-sm btn-primary" onClick={e => { e.stopPropagation(); nav(`/manager/vouchers/${v.id}`); }}>
-                              Review
+                            <button className={`btn btn-sm ${v.status === VS.ASSIGNED ? 'btn-primary' : ''}`}
+                              onClick={e => { e.stopPropagation(); nav(`${basePath}/vouchers/${v.id}`); }}>
+                              {v.status === VS.ASSIGNED ? 'Review' : 'View'}
                             </button>
                           </td>
                         </tr>
@@ -120,40 +146,10 @@ export default function ManagerDashboard() {
           </div>
         )}
 
-        {reviewed.length > 0 && (
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text3)', marginBottom: 10 }}>Previously reviewed</div>
-            <div className="card">
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr><th>Voucher No.</th><th>Bill Date</th><th>Supplier</th><th>Amount</th><th>Status</th><th></th></tr>
-                  </thead>
-                  <tbody>
-                    {reviewed.map(v => {
-                      const finalAmt = (parseFloat(v.total_amount) || 0) - (parseFloat(v.balance_amount) || 0);
-                      return (
-                      <tr key={v.id}>
-                        <td><span className="mono">{v.voucher_no || v.tally_vch_no || '—'}</span></td>
-                        <td><span className="mono">{fmtDate(v.invoice_date) || '—'}</span></td>
-                        <td>{v.supplier_name || '—'}</td>
-                        <td>
-                          <span className="mono">{fmt(v.total_amount)}</span>
-                          {parseFloat(v.balance_amount) > 0 && (
-                            <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>
-                              Pay: {fmt(finalAmt)}
-                            </div>
-                          )}
-                        </td>
-                        <td><StatusBadge status={v.status} /></td>
-                        <td><button className="btn btn-sm" onClick={() => nav(`/manager/vouchers/${v.id}`)}>View</button></td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+        {!loading && filtered.length === 0 && vouchers.length > 0 && (
+          <div style={{ padding: 60, textAlign: 'center', color: 'var(--text3)' }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
+            <div style={{ fontWeight: 500 }}>No vouchers match this status filter</div>
           </div>
         )}
 

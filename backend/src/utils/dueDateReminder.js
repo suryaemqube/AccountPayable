@@ -19,27 +19,31 @@ async function sendDueReminders() {
     const result = await pool.query(`
       SELECT
         v.id,
-        v.total_amount,
-        v.bill_ref_no,
-        v.payment_reference,
-        v.due_days,
+        v.voucher_no,
+        v.amount,
+        b.bill_ref_no,
+        b.payment_reference,
+        COALESCE(v.due_days, b.due_days) AS due_days,
         v.assigned_at,
-        (v.assigned_at::date + v.due_days) AS due_date,
+        (v.assigned_at::date + COALESCE(v.due_days, b.due_days)) AS due_date,
         s.supplier_name,
         u.id    AS assignee_id,
         u.name  AS assignee_name,
         u.email AS assignee_email,
-        ((v.assigned_at::date + v.due_days) - CURRENT_DATE) AS days_left
+        pdrole.code AS assignee_role,
+        ((v.assigned_at::date + COALESCE(v.due_days, b.due_days)) - CURRENT_DATE) AS days_left
       FROM vouchers v
-      LEFT JOIN suppliers s ON s.id = v.supplier_id
+      LEFT JOIN bills     b ON b.id = v.bill_id
+      LEFT JOIN suppliers s ON s.id = b.supplier_id
       JOIN users u ON u.id = v.assigned_to
+      LEFT JOIN parameter_details pdrole ON pdrole.parameterdetid = u.role_det_id
       JOIN parameter_details pd ON pd.parameterdetid = v.status_det_id
       WHERE pd.code = 'assigned'
         AND v.assigned_at IS NOT NULL
-        AND v.due_days IS NOT NULL
+        AND COALESCE(v.due_days, b.due_days) IS NOT NULL
         AND v.assigned_to IS NOT NULL
-        AND ((v.assigned_at::date + v.due_days) - CURRENT_DATE) BETWEEN 0 AND 5
-      ORDER BY (v.assigned_at::date + v.due_days) ASC
+        AND ((v.assigned_at::date + COALESCE(v.due_days, b.due_days)) - CURRENT_DATE) BETWEEN 0 AND 5
+      ORDER BY (v.assigned_at::date + COALESCE(v.due_days, b.due_days)) ASC
     `);
 
     if (!result.rows.length) {
@@ -56,25 +60,29 @@ async function sendDueReminders() {
       }
 
       const daysLeft = parseInt(row.days_left);
+      const fmtSubAmt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const html     = buildDueReminderHTML(
         {
+          id:                row.id,
+          voucher_no:        row.voucher_no,
           supplier_name:     row.supplier_name,
           bill_ref_no:       row.bill_ref_no,
           payment_reference: row.payment_reference,
-          total_amount:      row.total_amount,
+          amount:            row.amount,
           assigned_at:       row.assigned_at,
           due_days:          row.due_days,
         },
-        { name: row.assignee_name, email: row.assignee_email },
+        { name: row.assignee_name, email: row.assignee_email, role: row.assignee_role },
         daysLeft
       );
 
+      const voucherLabel = row.voucher_no ? `Voucher #${row.voucher_no}` : 'Voucher';
       const subject =
         daysLeft === 0
-          ? `🔴 Due TODAY: Voucher from ${row.supplier_name || 'Supplier'} — ₹${Number(row.total_amount).toLocaleString('en-IN')}`
+          ? `🔴 Due TODAY: ${voucherLabel} from ${row.supplier_name || 'Supplier'} — ₹${fmtSubAmt(row.amount)}`
           : daysLeft === 1
-          ? `🟠 Due TOMORROW: Voucher from ${row.supplier_name || 'Supplier'} — ₹${Number(row.total_amount).toLocaleString('en-IN')}`
-          : `🟡 Due in ${daysLeft} days: Voucher from ${row.supplier_name || 'Supplier'} — ₹${Number(row.total_amount).toLocaleString('en-IN')}`;
+          ? `🟠 Due TOMORROW: ${voucherLabel} from ${row.supplier_name || 'Supplier'} — ₹${fmtSubAmt(row.amount)}`
+          : `🟡 Due in ${daysLeft} days: ${voucherLabel} from ${row.supplier_name || 'Supplier'} — ₹${fmtSubAmt(row.amount)}`;
 
       try {
         await sendMail({ to: row.assignee_email, subject, html });

@@ -459,13 +459,13 @@ export default function PaymentStatus() {
             </div>
             <div className="card-body">
               <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 12 }}>
-                Use the <strong>payment_reference</strong> from the voucher (e.g. <code>2026/05/1487</code>)
+                Use the <strong>payment_reference</strong> from the voucher. Multiple refs comma-separated (e.g. <code>2026/04/658, 2026/04/659</code>)
               </div>
               <form onSubmit={handleRefLookup} style={{ display: 'flex', gap: 8 }}>
                 <input
                   value={refInput}
                   onChange={e => { setRefInput(e.target.value); setRefRows(null); }}
-                  placeholder="e.g. 2026/05/1487"
+                  placeholder="e.g. 2026/04/658, 2026/04/659"
                   style={{ flex: 1 }}
                 />
                 <button className="btn btn-primary" type="submit" disabled={refLoading}>
@@ -489,7 +489,7 @@ export default function PaymentStatus() {
                   value={searchInput}
                   onChange={e => handleSearchChange(e.target.value)}
                   placeholder="Type account name…"
-                  style={{ width: '100%' }}
+                  style={{ width: '100%', padding: '7px 10px', borderRadius: '6px', border: '1px solid rgb(222, 226, 230)', fontSize: '13px' }}
                   autoComplete="off"
                 />
                 {searchLoading && (

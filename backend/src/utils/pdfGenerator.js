@@ -1,7 +1,28 @@
-const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
+const puppeteer = require('puppeteer-core');
+const fs        = require('fs');
+const path      = require('path');
+const os        = require('os');
 
+// Edge only — Chrome deliberately excluded so it can never be picked, even
+// if Chrome is also installed on the server. Override with CHROME_PATH in
+// .env if Edge lives somewhere else.
+const WINDOWS_EDGE_PATHS = [
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+];
+
+function findBrowserExecutable() {
+  for (const p of WINDOWS_EDGE_PATHS) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error('Edge not found. Install Microsoft Edge on the server or set CHROME_PATH in .env to its location.');
+}
+
+const CHROME_EXECUTABLE = process.env.CHROME_PATH || findBrowserExecutable();
+
+const VOUCHERS_DIR = path.join(__dirname, '../../vouchers');
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 function fmt(n) {
   if (n == null || n === '') return '';
   return Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -20,38 +41,42 @@ function amountInWords(amount) {
     'Seventeen', 'Eighteen', 'Nineteen'];
   const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
   function convert(n) {
-    if (n < 20) return ones[n];
-    if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : '');
-    if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + convert(n % 100) : '');
-    if (n < 100000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 ? ' ' + convert(n % 1000) : '');
+    if (n < 20)       return ones[n];
+    if (n < 100)      return tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : '');
+    if (n < 1000)     return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + convert(n % 100) : '');
+    if (n < 100000)   return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 ? ' ' + convert(n % 1000) : '');
     if (n < 10000000) return convert(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 ? ' ' + convert(n % 100000) : '');
     return convert(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 ? ' ' + convert(n % 10000000) : '');
   }
   return convert(num) + ' Rupees Only';
 }
 
+// ── Logo as base64 (embed directly so Puppeteer can render it) ─────────────
+function getLogoBase64() {
+  const logoPath = path.join(__dirname, '../assets/logo.png');
+  if (fs.existsSync(logoPath)) {
+    return 'data:image/png;base64,' + fs.readFileSync(logoPath).toString('base64');
+  }
+  return '';
+}
+
+// ── HTML template ──────────────────────────────────────────────────────────
 function buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank = null) {
-  // For bill-based vouchers, amount = voucher.amount; fallback to bill total
-  const payAmount = Number(voucher.amount) || Number(voucher.bill_total_amount) || Number(voucher.total_amount) || 0;
-
-  // Build narration from voucher data
-  const narration = voucher.narration ||
-    (voucher.payment_reference ? `Being payment vide Ref: ${voucher.payment_reference}` : 'Being payment as per details above');
-
-  // Use tally vch no if available, otherwise fall back to generated
-  const displayVoucherNo = voucherNo || '';
-  // Company bank details (from master)
+  const payAmount   = Number(voucher.amount) || Number(voucher.bill_total_amount) || Number(voucher.total_amount) || 0;
+  const narration   = voucher.narration ||
+    (voucher.bill_payment_reference ? `Being payment vide Ref: ${voucher.bill_payment_reference}` : 'Being payment as per details above');
   const bankName    = companyBank?.bank_name     || '';
   const accountNo   = companyBank?.account_number || '';
   const accountName = companyBank?.account_name   || '';
-
+  const isApproved  = ['ready_to_remit', 'paid'].includes(voucher.status);
+  const logoBase64  = getLogoBase64();
   const approvalTrail = [
     `Prepared by: ${voucher.created_by_name || 'Admin'}`,
     voucher.assigned_to_name ? `Reviewed by: ${voucher.assigned_to_name} (Manager)` : '',
-    voucher.status === 'approved' ? `Approved: ${fmtDate(voucher.updated_at)}` : '',
+    isApproved ? `Approved: ${fmtDate(voucher.updated_at)}` : '',
   ].filter(Boolean).join('   |   ');
 
-  return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -257,13 +282,13 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank =
 <!-- TITLE -->
 <div class="voucher-title-bar">Payment Voucher</div>
 
-<!-- ROW 1: Voucher No + Date (date intentionally blank) -->
+<!-- ROW 1: Voucher No + Date (date the voucher was marked Paid, falling back to today if unset) -->
 <div class="field-row">
   <span class="field-label">Voucher No.</span>
-  <span class="field-line value">${displayVoucherNo}</span>
+  <span class="field-line value">${voucherNo}</span>
   <span class="spacer"></span>
   <span class="field-label">Date :</span>
-  <span class="field-line value" style="max-width:90px;">${fmtDate(new Date())}</span>
+  <span class="field-line value" style="max-width:90px;">${fmtDate(voucher.paid_at || new Date())}</span>
   <span class="field-line value" style="max-width:120px;"></span>
 </div>
 
@@ -313,7 +338,7 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank =
 <!-- ROW 6: Cheque / Bank / A/c -->
 <div class="field-row">
   <span class="field-label">Cheque No. / Cash</span>
-  <span class="field-line value" style="max-width:130px;">${voucher.payment_reference || ''}</span>
+  <span class="field-line value" style="max-width:130px;">${voucher.payment_mode || ''}</span>
   <span class="spacer"></span>
   <span class="field-label">Bank</span>
   <span class="field-line value">${bankName}${accountName ? ' — ' + accountName : ''}</span>
@@ -348,63 +373,63 @@ function buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank =
 </html>`;
 }
 
-// ── Generate PDF buffer (for direct download)
-async function generateVoucherPDF(voucher, lineItems, comments, companyBank = null) {
-  const voucherNo = voucher.voucher_no
-  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank);
-  return await renderPDF(html);
+// ── Puppeteer render using @sparticuz/chromium ─────────────────────────────
+// Each call gets its own fresh, unique userDataDir instead of relying on
+// puppeteer's default temp-dir handling — this is what previously caused
+// "The browser is already running for <dir>" crashes when a prior launch
+// left an orphaned Edge/Chrome process holding that profile's lockfile.
+async function renderPDF(html) {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'voucher-pdf-'));
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: CHROME_EXECUTABLE,
+      headless: 'new',
+      userDataDir,
+      // Communicate over stdio instead of a local WebSocket — the WebSocket
+      // handshake is what's failing when this runs under a non-interactive
+      // Windows Service account (no desktop session), even though the same
+      // Edge binary launches fine when run interactively.
+      pipe: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-first-run',
+      ],
+    });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    return await page.pdf({
+      format:          'A5',
+      landscape:       true,
+      printBackground: true,
+      margin: { top: '0', right: '0', bottom: '0', left: '0' },
+    });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    fs.rm(userDataDir, { recursive: true, force: true }, () => {});
+  }
 }
 
-// ── Generate PDF and SAVE to disk, return file path
-async function generateAndSaveVoucherPDF(voucher, lineItems, comments, companyBank = null) {
-  const voucherNo = voucher.voucher_no
-  const fileName = `voucher_${voucherNo}.pdf`;
-  const savePath = path.join(__dirname, '../../vouchers', fileName);
+// ── Public API ─────────────────────────────────────────────────────────────
+async function generateAndSaveVoucherPDF(voucher, comments, companyBank = null) {
+  if (!fs.existsSync(VOUCHERS_DIR)) fs.mkdirSync(VOUCHERS_DIR, { recursive: true });
+  const voucherNo = voucher.voucher_no || 'draft';
+  const fileName  = `voucher_${voucherNo}.pdf`;
+  const savePath  = path.join(VOUCHERS_DIR, fileName);
 
-  const html = buildVoucherHtml(voucher, lineItems, comments, voucherNo, companyBank);
+  const html = buildVoucherHtml(voucher, [], comments, voucherNo, companyBank);
   const pdfBuffer = await renderPDF(html);
-
   fs.writeFileSync(savePath, pdfBuffer);
-  console.log('Voucher saved to:', savePath);
 
   return { filePath: savePath, fileName, voucherNo };
 }
 
-// ── Shared Puppeteer render
-async function renderPDF(html) {
-  const chromePaths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  ];
-  const fs2 = require('fs');
-  const executablePath = chromePaths.find(p => fs2.existsSync(p));
-
-  const browser = await puppeteer.launch({
-    executablePath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-extensions',
-      '--disable-background-networking',
-    ],
-    userDataDir: 'C:\\Temp\\puppeteer-profile',
-    timeout: 60000,
-  });
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  const pdfBuffer = await page.pdf({
-    format: 'A5',
-    landscape: true,
-    printBackground: true,
-    margin: { top: '0', right: '0', bottom: '0', left: '0' },
-  });
-  await browser.close();
-  return pdfBuffer;
+async function generateVoucherPDF(voucher, comments, companyBank = null) {
+  const html = buildVoucherHtml(voucher, [], comments, voucher.voucher_no || 'draft', companyBank);
+  return renderPDF(html);
 }
 
 module.exports = { generateVoucherPDF, generateAndSaveVoucherPDF, buildVoucherHtml };

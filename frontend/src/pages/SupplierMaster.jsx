@@ -4,6 +4,9 @@ import api from '../api/client';
 import Layout from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import { validateAttachmentFiles, ALLOWED_ATTACHMENT_EXTENSIONS } from '../constants/upload';
+import { isAndroid } from '../components/Helpers';
+import Pagination from '../components/Pagination';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -16,6 +19,8 @@ const ADDRESS_TYPES = [
 // Documents section (uploads)
 const DOCUMENT_TYPES = [
   { key: 'cancelled_cheque',  label: 'Cancelled Cheque Copy',            mandatory: true  },
+  { key: 'pan_card',          label: 'PAN Card Copy',                    mandatory: false },
+  { key: 'gst_certificate',   label: 'GST Registration',                  mandatory: false },
   { key: 'bank_verification', label: 'Bank Verification Letter',         mandatory: false },
   { key: 'company_reg_cert',  label: 'Company Registration Certificate', mandatory: false },
   { key: 'nda',               label: 'NDA (if required)',                 mandatory: false },
@@ -91,7 +96,15 @@ function DocPreviewModal({ apiPath, name, onClose }) {
           {loading && <div style={{ color:'var(--text3)', padding:40 }}>Loading…</div>}
           {error   && <div style={{ color:'var(--red)', padding:40 }}>{error}</div>}
           {blobUrl && (isPdf ? (
-            <iframe src={blobUrl} style={{ width:'100%', height:'75vh', border:'none' }} title={name} />
+            isAndroid() ? (
+              <div style={{ padding:40, textAlign:'center', color:'var(--text3)' }}>
+                <div style={{ fontSize:40, marginBottom:12 }}>📄</div>
+                <div style={{ marginBottom:12 }}>{name}</div>
+                <a href={blobUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary">Open PDF</a>
+              </div>
+            ) : (
+              <iframe src={blobUrl} style={{ width:'100%', height:'75vh', border:'none' }} title={name} />
+            )
           ) : isImg ? (
             <img src={blobUrl} alt={name} style={{ maxWidth:'100%', display:'block', margin:'0 auto' }} />
           ) : (
@@ -137,7 +150,7 @@ function DocRow({ dt, uploaded, pending, isUploading, supplierId, onUpload, onDe
             </>
           ) : (
             <>
-              <input type="file" ref={fileRef} style={{ display:'none' }} accept=".pdf,.jpg,.jpeg,.png"
+              <input type="file" ref={fileRef} style={{ display:'none' }} accept={ALLOWED_ATTACHMENT_EXTENSIONS.join(',')}
                 onChange={e => onUpload(e.target.files[0])} />
               <button className="btn btn-sm" disabled={isUploading} onClick={() => fileRef.current?.click()}>
                 {isUploading ? 'Uploading…' : 'Upload'}
@@ -158,11 +171,11 @@ function SupplierForm({ supplierId, onSaved }) {
 
   const [form, setForm] = useState({
     // Basic Information
-    supplier_name:'', trade_name:'', vendor_code:'', supplier_type:'',
-    gstin:'', cin_number:'', msme_reg_number:'',
+    supplier_name:'', trade_name:'', name_for_bank:'', vendor_code:'', supplier_type:'',
+    gstin:'', cin_number:'',
     // Tax & Compliance
     pan_number:'', gst_certificate:'', tds_applicable:false,
-    lower_deduction_cert:'', msme_declaration:'', udyam_reg_number:'',
+    lower_deduction_cert:'', udyam_reg_number:'',
     pf_registration:'', esic_registration:'',
     // Operational Details
     products_services:'', territory:'',
@@ -206,12 +219,12 @@ function SupplierForm({ supplierId, onSaved }) {
       api.get(`/suppliers/${supplierId}`).then(r => {
         const { supplier:s, banks:b, contacts:c, addresses:a, documents:d } = r.data;
         setForm({
-          supplier_name:s.supplier_name||'', trade_name:s.trade_name||'',
+          supplier_name:s.supplier_name||'', trade_name:s.trade_name||'', name_for_bank:s.name_for_bank||'',
           vendor_code:s.vendor_code||'', supplier_type:s.supplier_type||'',
-          gstin:s.gstin||'', cin_number:s.cin_number||'', msme_reg_number:s.msme_reg_number||'',
+          gstin:s.gstin||'', cin_number:s.cin_number||'',
           pan_number:s.pan_number||'', gst_certificate:s.gst_certificate||'',
           tds_applicable:s.tds_applicable||false, lower_deduction_cert:s.lower_deduction_cert||'',
-          msme_declaration:s.msme_declaration||'', udyam_reg_number:s.udyam_reg_number||'',
+          udyam_reg_number:s.udyam_reg_number||'',
           pf_registration:s.pf_registration||'', esic_registration:s.esic_registration||'',
           products_services:s.products_services||'', territory:s.territory||'',
           owned_by:s.owned_by||'', is_active:s.is_active,
@@ -263,8 +276,11 @@ function SupplierForm({ supplierId, onSaved }) {
 
   function handleDocUpload(docType, file) {
     if (!file) return;
-    if (!supplierId) { setPendingFiles(p => ({ ...p, [docType]: file })); return; }
-    uploadDocToServer(supplierId, docType, file);
+    const { valid, errors } = validateAttachmentFiles([file]);
+    if (errors.length) { errors.forEach(e => toast.error(e)); return; }
+    const [validFile] = valid;
+    if (!supplierId) { setPendingFiles(p => ({ ...p, [docType]: validFile })); return; }
+    uploadDocToServer(supplierId, docType, validFile);
   }
 
   async function handleDocDelete(doc) {
@@ -285,8 +301,8 @@ function SupplierForm({ supplierId, onSaved }) {
     if (!form.supplier_name.trim())    return 'Supplier Name is required';
     if (!form.trade_name.trim())       return 'Trade Name is required';
     if (!form.supplier_type)           return 'Supplier Type is required';
-    if (!form.gstin.trim())            return 'GST Number is required';
-    if (!form.msme_reg_number.trim())  return 'MSME Registration Number is required';
+    if (form.supplier_type !== 'OTHER' && !form.gstin.trim()) return 'GST Number is required';
+
     const c0 = contacts[0];
     if (!c0?.primary_contact_name?.trim()) return 'Contact Person Name is required';
     if (!c0?.mobile?.trim())               return 'Contact Mobile Number is required';
@@ -298,8 +314,7 @@ function SupplierForm({ supplierId, onSaved }) {
     if (!b0?.account_number?.trim())      return 'Account Number is required';
     if (!b0?.ifsc_code?.trim())           return 'IFSC Code is required';
     if (!form.pan_number.trim())          return 'PAN Number is required';
-    if (!form.gst_certificate.trim())     return 'GST Certificate is required';
-    if (!form.msme_declaration.trim())    return 'MSME Declaration is required';
+
     if (!form.udyam_reg_number.trim())    return 'UDYAM Registration Number is required';
     if (!form.products_services)          return 'Products / Services is required';
     if (!form.territory)                  return 'Territory / Region is required';
@@ -385,6 +400,10 @@ function SupplierForm({ supplierId, onSaved }) {
               <input style={inp} value={form.trade_name} onChange={e => setF('trade_name', e.target.value)} placeholder="DBA / brand name" />
             </div>
             <div style={fg}>
+              <Label text="Name for Bank Files (DR/CR)" />
+              <input style={inp} value={form.name_for_bank} onChange={e => setF('name_for_bank', e.target.value)} placeholder="Name as it appears in bank files" />
+            </div>
+            <div style={fg}>
               <Label text="Vendor Code" />
               <input style={inpRO} value={form.vendor_code || (isEdit ? '' : 'Auto-generated')} readOnly />
             </div>
@@ -402,15 +421,11 @@ function SupplierForm({ supplierId, onSaved }) {
               <input style={inp} value={form.pan_number} onChange={e => setF('pan_number', e.target.value.toUpperCase())} placeholder="AAXCA1234M" maxLength={10} />
             </div>
             <div style={fg}>
-              <Label text="GST Number" required />
-              <input style={inp} value={form.gstin} onChange={e => setF('gstin', e.target.value.toUpperCase())} placeholder="27AAXCA1234M1Z5" maxLength={15} />
+              <Label text="GST Number" required={form.supplier_type !== 'OTHER'} />
+              <input style={inp} value={form.gstin} onChange={e => setF('gstin', e.target.value.toUpperCase())} placeholder={form.supplier_type === 'OTHER' ? 'Optional for Other type' : '27AAXCA1234M1Z5'} maxLength={15} />
             </div>
           </div>
           <div style={row3}>
-            <div style={fg}>
-              <Label text="MSME Registration Number" required />
-              <input style={inp} value={form.msme_reg_number} onChange={e => setF('msme_reg_number', e.target.value)} />
-            </div>
             <div style={fg}>
               <Label text="UDYAM Registration Number" required />
               <input style={inp} value={form.udyam_reg_number} onChange={e => setF('udyam_reg_number', e.target.value)} />
@@ -826,13 +841,30 @@ const APPROVAL_TABS = [
   { key: '',         label: 'All'      },
 ];
 
+const SUPPLIER_COLUMNS = [
+  { key: 'vendor_code',         label: 'Vendor Code' },
+  { key: 'trade_name',          label: 'Trader Name' },
+  { key: 'supplier_type_label', label: 'Type' },
+  { key: 'gstin',               label: 'GST Number' },
+  { key: 'approval_status',     label: 'Approval' },
+  { key: 'approval_notes',      label: 'Notes / Reason' },
+  { key: 'approved_by_name',    label: 'Approved By' },
+  { key: 'is_active',           label: 'Active' },
+];
+
+function supplierSortValue(s, key) {
+  if (key === 'is_active') return s.is_active ? 1 : 0;
+  return (s[key] || '').toString().toLowerCase();
+}
+
 export default function SupplierMaster() {
   const location = useLocation();
   const { user } = useAuth();
   const isApprover = user?.role === 'approver';
   const isAdmin    = user?.role === 'admin';
+  const isExecutive    = user?.role === 'executive';
   const canApprove = isAdmin || isApprover;
-  const canEdit    = isAdmin || isApprover;
+  const canEdit    = isAdmin || isApprover || isExecutive;
 
   const [suppliers, setSuppliers] = useState([]);
   const [loading,   setLoading]   = useState(true);
@@ -842,6 +874,9 @@ export default function SupplierMaster() {
   const [filterType,     setFilterType]     = useState('');
   const [filterApproval, setFilterApproval] = useState('pending');
   const [filterStatus,   setFilterStatus]   = useState('');
+  const [sortConfig,     setSortConfig]     = useState({ key: null, direction: 'asc' });
+  const [page,           setPage]           = useState(1);
+  const [pageSize,       setPageSize]       = useState(20);
 
   // Approve / reject modal
   const [modal, setModal]   = useState(null); // { supplier, action }
@@ -849,6 +884,8 @@ export default function SupplierMaster() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { if (view === 'list') fetchSuppliers(); }, [view]);
+
+  useEffect(() => { setPage(1); }, [search, filterType, filterApproval, filterStatus, sortConfig, pageSize]);
 
   useEffect(() => {
     const openId = location.state?.openSupplierId;
@@ -903,7 +940,7 @@ export default function SupplierMaster() {
 
   const displayed = suppliers.filter(s => {
     const q = search.toLowerCase();
-    if (q && ![ s.supplier_name, s.gstin, s.pan_number, s.vendor_code ]
+    if (q && ![ s.supplier_name, s.trade_name, s.gstin, s.pan_number, s.vendor_code ]
       .some(v => v && v.toLowerCase().includes(q))) return false;
     if (filterType && (s.supplier_type || '').toUpperCase() !== filterType) return false;
     if (filterApproval !== '' && s.approval_status !== filterApproval) return false;
@@ -911,6 +948,23 @@ export default function SupplierMaster() {
     if (filterStatus === 'inactive' &&  s.is_active) return false;
     return true;
   });
+
+  const sorted = sortConfig.key ? [...displayed].sort((a, b) => {
+    const av = supplierSortValue(a, sortConfig.key);
+    const bv = supplierSortValue(b, sortConfig.key);
+    let cmp;
+    if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+    else cmp = String(av).localeCompare(String(bv));
+    return sortConfig.direction === 'asc' ? cmp : -cmp;
+  }) : displayed;
+
+  function handleSort(key) {
+    setSortConfig(prev => prev.key === key
+      ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+      : { key, direction: 'asc' });
+  }
+
+  const paginated = sorted.slice((page - 1) * pageSize, page * pageSize);
 
   if (view !== 'list') return (
     <Layout>
@@ -957,7 +1011,7 @@ export default function SupplierMaster() {
         {/* Filter bar */}
         <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap', alignItems:'center', width:'40%' }}>
           <input
-            placeholder="Search name, GST, PAN, vendor code…"
+            placeholder="Search name, trader name, GST, PAN, vendor code…"
             value={search} onChange={e => setSearch(e.target.value)}
             style={{ flex:'1 1 200px', minWidth:180, padding:'7px 12px', border:'1px solid var(--border)',
               borderRadius:8, fontSize:13, background:'var(--bg)', color:'var(--text)' }}
@@ -968,6 +1022,7 @@ export default function SupplierMaster() {
             <option value="RESELLER">Reseller</option>
             <option value="DISTRIBUTOR">Distributor</option>
             <option value="OEM">OEM</option>
+            <option value="OTHER">Other</option>
           </select>
           <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
             style={{ padding:'7px 10px', border:'1px solid var(--border)', borderRadius:8, fontSize:13, background:'var(--bg)', color:'var(--text)' }}>
@@ -983,7 +1038,7 @@ export default function SupplierMaster() {
         <div className="card">
           {loading ? (
             <div style={{ padding:40, textAlign:'center', color:'var(--text3)' }}>Loading…</div>
-          ) : displayed.length === 0 ? (
+          ) : sorted.length === 0 ? (
             <div style={{ padding:60, textAlign:'center', color:'var(--text3)' }}>
               <div style={{ fontSize:32, marginBottom:12 }}>🏢</div>
               <div style={{ fontWeight:500, marginBottom:6 }}>No suppliers found</div>
@@ -993,22 +1048,22 @@ export default function SupplierMaster() {
               <table>
                 <thead>
                   <tr>
-                    <th>Vendor Code</th>
-                    <th>Supplier Name</th>
-                    <th>Type</th>
-                    <th>GST Number</th>
-                    <th>Approval</th>
-                    <th>Notes / Reason</th>
-                    <th>Approved By</th>
-                    <th>Active</th>
+                    {SUPPLIER_COLUMNS.map(col => (
+                      <th key={col.key} onClick={() => handleSort(col.key)} style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} title="Click to sort">
+                        {col.label}
+                        <span style={{ marginLeft:4, fontSize:10, color: sortConfig.key === col.key ? 'var(--text)' : 'var(--text3)' }}>
+                          {sortConfig.key === col.key ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '▲▼'}
+                        </span>
+                      </th>
+                    ))}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {displayed.map(s => (
+                  {paginated.map(s => (
                     <tr key={s.id}>
                       <td><span className="mono" style={{ fontSize:12 }}>{s.vendor_code||'—'}</span></td>
-                      <td style={{ fontWeight:500 }}>{s.supplier_name}</td>
+                      <td style={{ fontWeight:500 }}>{s.trade_name || s.supplier_name}</td>
                       <td>{s.supplier_type_label||'—'}</td>
                       <td className="mono">{s.gstin||'—'}</td>
                       <td>
@@ -1066,6 +1121,7 @@ export default function SupplierMaster() {
                   ))}
                 </tbody>
               </table>
+              <Pagination page={page} pageSize={pageSize} total={sorted.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
             </div>
           )}
         </div>

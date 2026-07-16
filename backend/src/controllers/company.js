@@ -7,7 +7,10 @@ async function listCompanies(req, res) {
       'SELECT * FROM company_details ORDER BY created_at DESC'
     );
     const banks = await pool.query(
-      'SELECT * FROM company_bank_accounts ORDER BY company_id, is_primary DESC, created_at'
+      `SELECT cba.*, pd.code AS purchase_type_code, pd.parametervalues AS purchase_type_label
+       FROM company_bank_accounts cba
+       LEFT JOIN parameter_details pd ON pd.parameterdetid = cba.purchase_type_det_id
+       ORDER BY cba.company_id, cba.is_primary DESC, cba.created_at`
     );
 
     const result = companies.rows.map(c => ({
@@ -30,7 +33,10 @@ async function getCompany(req, res) {
     if (!c.rows.length) return res.status(404).json({ error: 'Company not found' });
 
     const banks = await pool.query(
-      'SELECT * FROM company_bank_accounts WHERE company_id = $1 ORDER BY is_primary DESC, created_at',
+      `SELECT cba.*, pd.code AS purchase_type_code, pd.parametervalues AS purchase_type_label
+       FROM company_bank_accounts cba
+       LEFT JOIN parameter_details pd ON pd.parameterdetid = cba.purchase_type_det_id
+       WHERE cba.company_id = $1 ORDER BY cba.is_primary DESC, cba.created_at`,
       [id]
     );
     res.json({ company: c.rows[0], banks: banks.rows });
@@ -60,16 +66,19 @@ async function createCompany(req, res) {
       const b = banks[i];
       await client.query(
         `INSERT INTO company_bank_accounts
-           (company_id, bank_name, account_name, account_number, ifsc_code, branch_name, is_primary)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+           (company_id, bank_name, account_name, account_number, ifsc_code, branch_name, is_primary, purchase_type_det_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [company.id, b.bank_name || '', b.account_name || '', b.account_number || '',
-         b.ifsc_code || '', b.branch_name || '', i === 0]
+         b.ifsc_code || '', b.branch_name || '', i === 0, b.purchase_type_det_id ? parseInt(b.purchase_type_det_id) : null]
       );
     }
 
     await client.query('COMMIT');
     const banksResult = await pool.query(
-      'SELECT * FROM company_bank_accounts WHERE company_id=$1 ORDER BY is_primary DESC', [company.id]
+      `SELECT cba.*, pd.code AS purchase_type_code, pd.parametervalues AS purchase_type_label
+       FROM company_bank_accounts cba
+       LEFT JOIN parameter_details pd ON pd.parameterdetid = cba.purchase_type_det_id
+       WHERE cba.company_id=$1 ORDER BY cba.is_primary DESC`, [company.id]
     );
     res.status(201).json({ company, banks: banksResult.rows });
   } catch (err) {
@@ -101,27 +110,64 @@ async function updateCompany(req, res) {
     );
 
     if (banks !== undefined) {
-      await client.query('DELETE FROM company_bank_accounts WHERE company_id = $1', [id]);
+      const incomingIds = banks.filter(b => b.id).map(b => b.id);
+
+      // Delete only banks not referenced by any bill
+      if (incomingIds.length > 0) {
+        await client.query(
+          `DELETE FROM company_bank_accounts
+           WHERE company_id=$1 AND id <> ALL($2::uuid[])
+             AND id NOT IN (SELECT company_bank_id FROM bills WHERE company_bank_id IS NOT NULL)`,
+          [id, incomingIds]
+        );
+      } else {
+        await client.query(
+          `DELETE FROM company_bank_accounts
+           WHERE company_id=$1
+             AND id NOT IN (SELECT company_bank_id FROM bills WHERE company_bank_id IS NOT NULL)`,
+          [id]
+        );
+      }
+
       for (let i = 0; i < banks.length; i++) {
         const b = banks[i];
-        await client.query(
-          `INSERT INTO company_bank_accounts
-             (company_id, bank_name, account_name, account_number, ifsc_code, branch_name, is_primary)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [id, b.bank_name || '', b.account_name || '', b.account_number || '',
-           b.ifsc_code || '', b.branch_name || '', b.is_primary || i === 0]
-        );
+        const ptId = b.purchase_type_det_id ? parseInt(b.purchase_type_det_id) : null;
+        if (b.id) {
+          // Update existing bank in-place
+          await client.query(
+            `UPDATE company_bank_accounts SET
+               bank_name=$1, account_name=$2, account_number=$3,
+               ifsc_code=$4, branch_name=$5, is_primary=$6, purchase_type_det_id=$7
+             WHERE id=$8 AND company_id=$9`,
+            [b.bank_name || '', b.account_name || '', b.account_number || '',
+             b.ifsc_code || '', b.branch_name || '', b.is_primary || false, ptId, b.id, id]
+          );
+        } else {
+          // Insert new bank
+          await client.query(
+            `INSERT INTO company_bank_accounts
+               (company_id, bank_name, account_name, account_number, ifsc_code, branch_name, is_primary, purchase_type_det_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [id, b.bank_name || '', b.account_name || '', b.account_number || '',
+             b.ifsc_code || '', b.branch_name || '', b.is_primary || false, ptId]
+          );
+        }
       }
     }
 
     await client.query('COMMIT');
     const c = await pool.query('SELECT * FROM company_details WHERE id=$1', [id]);
-    const bk = await pool.query('SELECT * FROM company_bank_accounts WHERE company_id=$1 ORDER BY is_primary DESC', [id]);
+    const bk = await pool.query(
+      `SELECT cba.*, pd.code AS purchase_type_code, pd.parametervalues AS purchase_type_label
+       FROM company_bank_accounts cba
+       LEFT JOIN parameter_details pd ON pd.parameterdetid = cba.purchase_type_det_id
+       WHERE cba.company_id=$1 ORDER BY cba.is_primary DESC`, [id]
+    );
     res.json({ company: c.rows[0], banks: bk.rows });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }

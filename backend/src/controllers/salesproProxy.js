@@ -32,13 +32,34 @@ async function callSalesPro(res, path, body) {
 }
 
 // ── Flow 1: lookup by payment_reference (ExtRef)
-// POST /salespro/payment-by-ref  { extRef: "2026/05/1487" }
+// POST /salespro/payment-by-ref  { extRef: "2026/05/1487" or "2026/04/658, 2026/04/659" }
+// Supports comma-separated multiple refs — results are merged into one Data array.
 async function getByRef(req, res) {
   const { extRef } = req.body;
   if (!extRef || !extRef.trim()) {
     return res.status(400).json({ error: 'extRef is required' });
   }
-  return callSalesPro(res, '/api/Appayment/GetByRef', { ExtRef: extRef.trim() });
+
+  const refs = extRef.split(',').map(r => r.trim()).filter(Boolean);
+
+  if (!BASE) {
+    return res.status(500).json({ error: 'SALESPRO_API_URL is not configured in .env' });
+  }
+
+  try {
+    const results = await Promise.all(refs.map(ref =>
+      axios.post(`${BASE}/api/Appayment/GetByRef`, { ExtRef: ref }, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' },
+      }).then(r => r.data.Data || []).catch(() => [])
+    ));
+
+    const merged = results.flat();
+    return res.json({ Data: merged });
+  } catch (err) {
+    const message = err.response?.data?.Status?.MessageText || err.message || 'SalesPro API error';
+    return res.status(500).json({ error: message });
+  }
 }
 
 // ── Flow 2a: search accounts by name (min 3 chars, DB enforces 6-char spirit)

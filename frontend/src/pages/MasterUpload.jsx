@@ -24,6 +24,7 @@ function TallyImport() {
   const [vouchers,            setVouchers]            = useState([]);
   const [suppliers,           setSuppliers]           = useState([]);
   const [banks,               setBanks]               = useState([]);
+  const [states,              setStates]              = useState([]);
   const [importing,           setImporting]           = useState(false);
   const [pendingAttachments,  setPendingAttachments]  = useState({}); // rowIndex → File[]
   const [uploadProgress,      setUploadProgress]      = useState({}); // voucherId → 'uploading'|'done'|'error'
@@ -45,16 +46,23 @@ function TallyImport() {
       const r = await api.post('/import/xl-parse', fd);
       setBanks(r.data.banks);
       setSuppliers(r.data.suppliers);
-      const primary = r.data.banks.find(b => b.is_primary) || r.data.banks[0];
-      // Pre-assign primary bank to every voucher row
-      setVouchers(r.data.vouchers.map(v => ({ ...v, company_bank_id: primary?.id || null })));
+      setStates(r.data.states || []);
+      const allBanks = r.data.banks;
+      const primary  = allBanks.find(b => b.is_primary) || allBanks[0];
+      // Auto-select bank by purchase_type_code, fall back to primary
+      setVouchers(r.data.vouchers.map(v => {
+        const matched = v.purchase_type_code
+          ? allBanks.find(b => b.purchase_type_code === v.purchase_type_code)
+          : null;
+        return { ...v, company_bank_id: matched?.id || primary?.id || null };
+      }));
       toast.success(`${r.data.vouchers.length} voucher(s) found in file`);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Parse failed');
     } finally { setParsing(false); }
   }
 
-  function reset() { setFile(null); setVouchers([]); setSuppliers([]); setBanks([]); setPendingAttachments({}); setUploadProgress({}); }
+  function reset() { setFile(null); setVouchers([]); setSuppliers([]); setBanks([]); setStates([]); setPendingAttachments({}); setUploadProgress({}); }
 
   function stageAttachments(rowIdx, files) {
     if (!files?.length) return;
@@ -71,14 +79,36 @@ function TallyImport() {
       [rowIdx]: (p[rowIdx] || []).filter((_, i) => i !== fileIdx),
     }));
   }
-  function setRow(i, field, val) { setVouchers(vs => vs.map((v, idx) => idx === i ? { ...v, [field]: val } : v)); }
+  function setRow(i, field, val) {
+    setVouchers(vs => vs.map((v, idx) => {
+      if (idx !== i) return v;
+      const updated = { ...v, [field]: val };
+      if (field === 'purchase_type_code') {
+        const primary = banks.find(b => b.is_primary) || banks[0];
+        const matched = val ? banks.find(b => b.purchase_type_code === val) : null;
+        updated.company_bank_id = matched?.id || primary?.id || null;
+      }
+      return updated;
+    }));
+  }
   function setSupplierForRow(i, suppId) {
     const s = suppliers.find(s => s.id === suppId);
     setVouchers(vs => vs.map((v, idx) =>
       idx === i ? { ...v, supplier_id: suppId, supplier_name: s?.supplier_name || v.party_name, matched: true } : v
     ));
   }
-  function removeRow(i) { setVouchers(vs => vs.filter((_, idx) => idx !== i)); }
+  function removeRow(i) {
+    setVouchers(vs => vs.filter((_, idx) => idx !== i));
+    setPendingAttachments(p => {
+      const next = {};
+      Object.entries(p).forEach(([key, files]) => {
+        const k = Number(key);
+        if (k < i) next[k] = files;
+        else if (k > i) next[k - 1] = files;
+      });
+      return next;
+    });
+  }
 
   async function handleImport() {
     if (!vouchers.length) return toast.error('No vouchers to import');
@@ -156,6 +186,12 @@ function TallyImport() {
               <div style={{ color: 'var(--text3)', fontSize: 12 }}>Supports .xlsx and .xls · Purchase Register format</div>
               <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
                 onChange={e => handleFile(e.target.files[0])} />
+              <div style={{ marginTop: 16 }} onClick={e => e.stopPropagation()}>
+                <a href="#" onClick={async e => { e.preventDefault(); const r = await api.get('/import/template/bills', { responseType: 'blob' }); const url = URL.createObjectURL(r.data); const a = document.createElement('a'); a.href = url; a.download = 'Invoice_Data_To_Upload.xlsx'; a.click(); URL.revokeObjectURL(url); }}
+                  style={{ fontSize: 12, color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  ⬇ Download Template
+                </a>
+              </div>
             </div>
           ) : (
             <div className="card">
@@ -232,7 +268,7 @@ function TallyImport() {
           {duplicates > 0 && (
             <div style={{ background: '#fdecea', border: '1px solid #f5a5a5', borderRadius: 8, padding: '10px 14px',
               fontSize: 13, marginBottom: 10, color: '#9b1c1c' }}>
-              🚫 {duplicates} row(s) already exist in the system (same Bill Ref No + Supplier + Date) and will be <strong>skipped</strong> on import. You can remove them from the list or leave them — they won't be duplicated.
+              🚫 {duplicates} row(s) reuse an Invoice Ref No or Cost Centre that's already in the system (or repeated within this file) and will be <strong>skipped</strong> on import. Invoice Ref No and Cost Centre must each be unique.
             </div>
           )}
 
@@ -247,6 +283,7 @@ function TallyImport() {
                     <th>Supplier</th>
                     <th>Invoice No.</th>
                     <th>Purchase Type</th>
+                    <th>Payment Mode</th>
                     <th>Cos Centre</th>
                     <th>Credit Days</th>
                     <th>Bank Account</th>
@@ -299,22 +336,46 @@ function TallyImport() {
                       </td>
                       <td style={{ fontSize: 12, fontFamily: 'monospace' }}>
                         {v.bill_ref_no || '—'}
-                        {v.duplicate && (
-                          <div style={{ fontSize: 10, color: '#9b1c1c', fontWeight: 600, marginTop: 2 }}>🚫 Already imported</div>
+                        {v.duplicate_ref_reason && (
+                          <div style={{ fontSize: 10, color: '#9b1c1c', fontWeight: 600, marginTop: 2 }}>🚫 {v.duplicate_ref_reason}</div>
                         )}
                       </td>
                       <td>
                         <select value={v.purchase_type_code || ''} onChange={e => setRow(i, 'purchase_type_code', e.target.value || null)}
                           style={{ fontSize: 12, padding: '3px 6px' }}>
                           <option value="">— Type —</option>
-                          <option value="SALABLE">Salable</option>
-                          <option value="CONSUMPTION">Consumption</option>
+                          <option value="SALE">Sale</option>
+                          <option value="SALE_MULTIPLE">Sale - Multiple</option>
+                          <option value="CONSUME">Consume</option>
+                          <option value="PROJECT">Project</option>
                         </select>
                         {!v.purchase_type_code && v.vch_type && (
                           <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>from file: {v.vch_type}</div>
                         )}
                       </td>
-                      <td style={{ fontSize: 12, color: 'var(--text3)', fontFamily: 'monospace' }}>{v.payment_reference || '—'}</td>
+                      <td>
+                        <select value={v.payment_mode || 'NEFT'} onChange={e => setRow(i, 'payment_mode', e.target.value)}
+                          style={{ fontSize: 12, padding: '3px 6px' }}>
+                          <option value="NEFT">NEFT</option>
+                          <option value="RTGS">RTGS</option>
+                          <option value="FT">FT</option>
+                          <option value="CHEQUE">CHEQUE</option>
+                        </select>
+                      </td>
+                      <td style={{ fontSize: 12 }}>
+                        {v.purchase_type_code === 'CONSUME' ? (
+                          <select value={v.payment_reference || ''} onChange={e => setRow(i, 'payment_reference', e.target.value)}
+                            style={{ fontSize: 12, padding: '3px 6px', minWidth: 130 }}>
+                            <option value="">— Select state —</option>
+                            {states.map(s => <option key={s.parameterdetid} value={s.parametervalues}>{s.parametervalues}</option>)}
+                          </select>
+                        ) : (
+                          <span style={{ color: 'var(--text3)', fontFamily: 'monospace' }}>{v.payment_reference || '—'}</span>
+                        )}
+                        {v.duplicate_centre_reason && (
+                          <div style={{ fontSize: 10, color: '#9b1c1c', fontWeight: 600, marginTop: 2 }}>🚫 {v.duplicate_centre_reason}</div>
+                        )}
+                      </td>
                       <td style={{ fontSize: 12, textAlign: 'center' }}>
                         <input value={v.due_days || ''} onChange={e => setRow(i, 'due_days', e.target.value ? parseInt(e.target.value) : null)}
                           style={{ width: 50, fontSize: 12, padding: '3px 6px', textAlign: 'center' }} type="number" min="0" />
@@ -439,7 +500,7 @@ function BankUtrUpload() {
       setVouchers(r.data.vouchers);
       setTotalBankRows(r.data.total_bank_rows);
       if (!r.data.vouchers.length) {
-        toast.error('No exported vouchers found in the system. Export vouchers to bank first.');
+        toast.error('No eligible vouchers found. Vouchers must be in Exported or Ready to Remit status.');
       } else {
         toast.success(`${r.data.vouchers.length} voucher(s) · ${r.data.matched} matched from bank file`);
       }
@@ -585,7 +646,7 @@ function BankUtrUpload() {
                         <td style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text2)' }}>{v.bill_ref_no || '—'}</td>
                         <td style={{ fontSize: 12, color: 'var(--text3)' }}>{v.bank_row?.beneficiary_name || '—'}</td>
                         <td style={{ fontSize: 12, color: 'var(--text3)' }}>{v.bank_row?.customer_ref_no || '—'}</td>
-                        <td style={{ textAlign: 'right', fontSize: 12 }}>₹{fmt(v.total_amount)}</td>
+                        <td style={{ textAlign: 'right', fontSize: 12 }}>₹{fmt(v.amount)}</td>
                         <td>
                           <input
                             value={v.utr_no || ''}
@@ -705,6 +766,12 @@ function SupplierImport() {
               <div style={{ color: 'var(--text3)', fontSize: 12 }}>Supports .xlsx and .xls · Use the Supplier Master Template</div>
               <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
                 onChange={e => handleFile(e.target.files[0])} />
+              <div style={{ marginTop: 16 }} onClick={e => e.stopPropagation()}>
+                <a href="#" onClick={async e => { e.preventDefault(); const r = await api.get('/import/template/suppliers', { responseType: 'blob' }); const url = URL.createObjectURL(r.data); const a = document.createElement('a'); a.href = url; a.download = 'Supplier_Master_Template_Upload.xlsx'; a.click(); URL.revokeObjectURL(url); }}
+                  style={{ fontSize: 12, color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  ⬇ Download Template
+                </a>
+              </div>
             </div>
           ) : (
             <div className="card">
