@@ -7,7 +7,8 @@ import toast from 'react-hot-toast';
 // ── Payment status badge ───────────────────────────────────────────
 function PaidBadge({ outstanding, paidAmount, invoiceAmount }) {
   if (!invoiceAmount || invoiceAmount === 0) return null;
-  if (outstanding <= 0)
+  // Outstanding of ₹1 or less is treated as a rounding artifact, not a real balance due.
+  if (outstanding <= 1)
     return <span style={{ background: '#d1fae5', color: '#065f46', borderRadius: 99, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>✓ Paid</span>;
   if (paidAmount > 0)
     return <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 99, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>⏳ Partial</span>;
@@ -46,14 +47,14 @@ function ResultTable({ rows }) {
               </td>
               <td style={{ fontSize: 12, color: 'var(--text2)' }}>{r.executive || '—'}</td>
               <td><span className="mono" style={{ fontSize: 12 }}>{r.orderNo || '—'}</span></td>
-              <td style={{ textAlign: 'right' }}><span className="mono">₹{fmt(r.orderValue)}</span></td>
+              <td style={{ textAlign: 'right' }}><span className="mono">{fmt(r.orderValue)}</span></td>
               <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.orderDate || '—'}</td>
               <td><span className="mono" style={{ fontSize: 12 }}>{r.invoiceNo || '—'}</span></td>
               <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.invoiceDate || '—'}</td>
-              <td style={{ textAlign: 'right' }}><span className="mono">₹{fmt(r.invoiceAmount)}</span></td>
-              <td style={{ textAlign: 'right', color: 'var(--green)' }}><span className="mono">₹{fmt(r.paidAmount)}</span></td>
-              <td style={{ textAlign: 'right', color: r.outstanding > 0 ? 'var(--red)' : undefined, fontWeight: r.outstanding > 0 ? 600 : undefined }}>
-                <span className="mono">₹{fmt(r.outstanding)}</span>
+              <td style={{ textAlign: 'right' }}><span className="mono">{fmt(r.invoiceAmount)}</span></td>
+              <td style={{ textAlign: 'right', color: 'var(--green)' }}><span className="mono">{fmt(r.paidAmount)}</span></td>
+              <td style={{ textAlign: 'right', color: r.outstanding > 1 ? 'var(--red)' : undefined, fontWeight: r.outstanding > 1 ? 600 : undefined }}>
+                <span className="mono">{fmt(r.outstanding)}</span>
               </td>
               <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.lastPaymentDate || '—'}</td>
               <td>
@@ -67,13 +68,13 @@ function ResultTable({ rows }) {
             <tr style={{ background: 'var(--surface2)' }}>
               <td colSpan={7} style={{ textAlign: 'right', fontWeight: 600, fontSize: 12, padding: '8px 12px' }}>Totals</td>
               <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                <span className="mono">₹{fmt(rows.reduce((s, r) => s + (r.invoiceAmount || 0), 0))}</span>
+                <span className="mono">{fmt(rows.reduce((s, r) => s + (r.invoiceAmount || 0), 0))}</span>
               </td>
               <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--green)' }}>
-                <span className="mono">₹{fmt(rows.reduce((s, r) => s + (r.paidAmount || 0), 0))}</span>
+                <span className="mono">{fmt(rows.reduce((s, r) => s + (r.paidAmount || 0), 0))}</span>
               </td>
               <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--red)' }}>
-                <span className="mono">₹{fmt(rows.reduce((s, r) => s + (r.outstanding || 0), 0))}</span>
+                <span className="mono">{fmt(rows.reduce((s, r) => s + (r.outstanding || 0), 0))}</span>
               </td>
               <td colSpan={2}></td>
             </tr>
@@ -208,14 +209,14 @@ function ResultTableWithInstall({ rows, inlineInstall, inlineLoading, onInstall 
                   </td>
                   <td style={{ fontSize: 12, color: 'var(--text2)' }}>{r.executive || '—'}</td>
                   <td><span className="mono" style={{ fontSize: 12 }}>{r.orderNo || '—'}</span></td>
-                  <td style={{ textAlign: 'right' }}><span className="mono">₹{fmt(r.orderValue)}</span></td>
+                  <td style={{ textAlign: 'right' }}><span className="mono">{fmt(r.orderValue)}</span></td>
                   <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.orderDate || '—'}</td>
                   <td><span className="mono" style={{ fontSize: 12 }}>{r.invoiceNo || '—'}</span></td>
                   <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.invoiceDate || '—'}</td>
-                  <td style={{ textAlign: 'right' }}><span className="mono">₹{fmt(r.invoiceAmount)}</span></td>
-                  <td style={{ textAlign: 'right', color: 'var(--green)' }}><span className="mono">₹{fmt(r.paidAmount)}</span></td>
-                  <td style={{ textAlign: 'right', color: r.outstanding > 0 ? 'var(--red)' : undefined, fontWeight: r.outstanding > 0 ? 600 : undefined }}>
-                    <span className="mono">₹{fmt(r.outstanding)}</span>
+                  <td style={{ textAlign: 'right' }}><span className="mono">{fmt(r.invoiceAmount)}</span></td>
+                  <td style={{ textAlign: 'right', color: 'var(--green)' }}><span className="mono">{fmt(r.paidAmount)}</span></td>
+                  <td style={{ textAlign: 'right', color: r.outstanding > 1 ? 'var(--red)' : undefined, fontWeight: r.outstanding > 1 ? 600 : undefined }}>
+                    <span className="mono">{fmt(r.outstanding)}</span>
                   </td>
                   <td style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.lastPaymentDate || '—'}</td>
                   <td>

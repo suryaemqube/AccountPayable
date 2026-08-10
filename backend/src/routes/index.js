@@ -14,7 +14,7 @@ const salesproProxy = require('../controllers/salesproProxy');
 const paramCtrl          = require('../controllers/parameters');
 const billCtrl           = require('../controllers/bills');
 const notificationCtrl   = require('../controllers/notifications');
-const { sendDueReminders } = require('../utils/dueDateReminder');
+const { sendDueReminders, sendManualReminders } = require('../utils/dueDateReminder');
 
 const router = express.Router();
 
@@ -128,6 +128,20 @@ router.post('/admin/send-due-reminders', auth, requireRole('admin'), async (req,
 
   await sendDueReminders();
   res.json({ message: 'Due reminders sent' });
+});
+
+// Admin-only manual reminder send — bypasses the daily job's 0-5-day window so
+// overdue vouchers (or a specific voucher, or a due-date range) can be reminded on demand.
+// Body: { voucherNo?, overdueOnly?, dueDateFrom?, dueDateTo? } — omit all for "send to all assigned vouchers".
+router.post('/admin/send-due-reminders-manual', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { voucherNo, overdueOnly, dueDateFrom, dueDateTo } = req.body || {};
+    const result = await sendManualReminders({ voucherNo, overdueOnly, dueDateFrom, dueDateTo });
+    res.json({ message: `Reminders sent to ${result.sentCount} of ${result.matched} matching voucher(s)`, ...result });
+  } catch (err) {
+    console.error('send-due-reminders-manual error:', err);
+    res.status(500).json({ error: 'Failed to send reminders' });
+  }
 });
 
 // Notifications (admin/approver bell)

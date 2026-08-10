@@ -14,7 +14,8 @@ import toast from 'react-hot-toast';
 // ─────────────────────────────────────────────────────────────────
 export function PaidBadge({ outstanding, paidAmount, invoiceAmount }) {
   if (!invoiceAmount || invoiceAmount === 0) return null;
-  if (outstanding <= 0)
+  // Outstanding of ₹1 or less is treated as a rounding artifact, not a real balance due.
+  if (outstanding <= 1)
     return <span style={{ background: '#d1fae5', color: '#065f46', borderRadius: 99, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>✓ Paid</span>;
   if (paidAmount > 0)
     return <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 99, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>⏳ Partial</span>;
@@ -176,11 +177,11 @@ export function PaymentTable({ rows, selectable, selectedRefs, onToggle }) {
                 <td style={{ padding: '7px 8px' }}><span className="mono">{r.orderNo || '—'}</span></td>
                 <td style={{ padding: '7px 8px' }}><span className="mono">{r.paymentReference || '—'}</span></td>
                 <td style={{ padding: '7px 8px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.invoiceDate || '—'}</td>
-                <td style={{ padding: '7px 8px', textAlign: 'right' }}><span className="mono">₹{fmt(r.invoiceAmount)}</span></td>
-                <td style={{ padding: '7px 8px', textAlign: 'right', color: 'var(--green)' }}><span className="mono">₹{fmt(r.paidAmount)}</span></td>
-                <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: r.outstanding > 0 ? 600 : undefined,
-                  color: r.outstanding > 0 ? 'var(--red)' : undefined }}>
-                  <span className="mono">₹{fmt(r.outstanding)}</span>
+                <td style={{ padding: '7px 8px', textAlign: 'right' }}><span className="mono">{fmt(r.invoiceAmount)}</span></td>
+                <td style={{ padding: '7px 8px', textAlign: 'right', color: 'var(--green)' }}><span className="mono">{fmt(r.paidAmount)}</span></td>
+                <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: r.outstanding > 1 ? 600 : undefined,
+                  color: r.outstanding > 1 ? 'var(--red)' : undefined }}>
+                  <span className="mono">{fmt(r.outstanding)}</span>
                 </td>
                 <td style={{ padding: '7px 8px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>{r.lastPaymentDate || '—'}</td>
                 <td style={{ padding: '7px 8px' }}>
@@ -631,7 +632,7 @@ export function SalesproStatusCard({ paymentRef, supplierName, voucherId, onStat
                           }}>
                           <span className="mono">{r.orderNo}</span>
                           <span style={{ color: 'var(--text3)' }}>{r.orderDate}</span>
-                          <span className="mono" style={{ color: 'var(--text2)' }}>₹{fmt(r.orderValue)}</span>
+                          <span className="mono" style={{ color: 'var(--text2)' }}>{fmt(r.orderValue)}</span>
                         </div>
                       ))}
                     </div>

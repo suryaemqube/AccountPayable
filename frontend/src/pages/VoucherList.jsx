@@ -297,7 +297,7 @@ export default function VoucherList() {
                       />
                     </th>
                     {VOUCHER_COLUMNS.map(col => (
-                      <th key={col.key} onClick={() => handleSort(col.key)} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to sort">
+                      <th key={col.key} onClick={() => handleSort(col.key)} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}  title="Click to sort">
                         {col.label}
                         <span style={{ marginLeft: 4, fontSize: 10, color: sortConfig.key === col.key ? 'var(--text)' : 'var(--text3)' }}>
                           {sortConfig.key === col.key ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '▲▼'}
@@ -327,10 +327,10 @@ export default function VoucherList() {
                         {(() => {
                           const sev = getDueSeverity(v.due_date, v.status);
                           return sev ? (
-                            <span style={{ marginLeft: 6, fontSize: 10, background: sev.color, color: '#fff',
-                              padding: '1px 5px', borderRadius: 99, verticalAlign: 'middle' }}>
+                            <div style={{ fontSize: 10, background: sev.color, color: '#fff',
+                              padding: '1px 5px', borderRadius: 99, verticalAlign: 'middle',width:'fit-content' }}>
                               {sev.label}
-                            </span>
+                            </div>
                           ) : null;
                         })()}
                       </td>

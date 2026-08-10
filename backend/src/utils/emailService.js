@@ -176,16 +176,19 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
     Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   let dueDate = null;
-  if (voucher.assigned_at && voucher.due_days != null) {
-    dueDate = new Date(voucher.assigned_at);
+  if (voucher.invoice_date && voucher.due_days != null) {
+    dueDate = new Date(voucher.invoice_date);
     dueDate.setDate(dueDate.getDate() + Number(voucher.due_days));
   }
   const dueDateStr = dueDate
     ? dueDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })
     : '—';
 
-  const urgencyColor = daysLeft <= 2 ? '#dc2626' : daysLeft <= 3 ? '#d97706' : '#059669';
-  const urgencyLabel = daysLeft === 0 ? 'DUE TODAY' : daysLeft === 1 ? 'DUE TOMORROW' : `DUE IN ${daysLeft} DAYS`;
+  const isOverdue    = daysLeft < 0;
+  const urgencyColor = isOverdue || daysLeft <= 2 ? '#dc2626' : daysLeft <= 3 ? '#d97706' : '#059669';
+  const urgencyLabel = isOverdue
+    ? `OVERDUE BY ${Math.abs(daysLeft)} DAY${Math.abs(daysLeft) === 1 ? '' : 'S'}`
+    : daysLeft === 0 ? 'DUE TODAY' : daysLeft === 1 ? 'DUE TOMORROW' : `DUE IN ${daysLeft} DAYS`;
 
   const roleBasePath = { admin: '/admin', executive: '/executive', approver: '/approver', manager: '/manager' }[assignee.role] || '/manager';
   const voucherUrl = voucher.id
@@ -208,8 +211,9 @@ function buildDueReminderHTML(voucher, assignee, daysLeft) {
     <p style="margin:0 0 6px;font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;">Payment Due Reminder</p>
     <h2 style="margin:0;font-size:22px;font-weight:700;color:#111827;">Voucher review required</h2>
     <p style="margin:10px 0 0;color:#6b7280;font-size:14px;line-height:1.6;">
-      Hi ${assignee.name}, a voucher assigned to you is due on <strong>${dueDateStr}</strong>.
-      Please review and take action before the due date.
+      ${isOverdue
+        ? `Hi ${assignee.name}, a voucher assigned to you was due on <strong>${dueDateStr}</strong> and is now overdue. Please review and take action as soon as possible.`
+        : `Hi ${assignee.name}, a voucher assigned to you is due on <strong>${dueDateStr}</strong>. Please review and take action before the due date.`}
     </p>
   </div>
 

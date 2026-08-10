@@ -22,8 +22,8 @@ const VOUCHER_SELECT = `
     bs.supplier_name,
     bs.gstin AS supplier_gstin,
     CASE
-      WHEN v.assigned_at IS NOT NULL AND COALESCE(v.due_days, b.due_days) IS NOT NULL
-      THEN (v.assigned_at::date + COALESCE(v.due_days, b.due_days))
+      WHEN b.invoice_date IS NOT NULL AND COALESCE(v.due_days, b.due_days) IS NOT NULL
+      THEN (b.invoice_date + COALESCE(v.due_days, b.due_days))
       ELSE NULL
     END AS due_date,
     b.bill_no,
@@ -380,7 +380,7 @@ async function assignVoucher(req, res) {
       const dueRes = await pool.query(
         `SELECT v.id, v.voucher_no, v.amount, v.assigned_at,
                 COALESCE(v.due_days, b.due_days, 0) AS due_days,
-                b.bill_ref_no, b.payment_reference,
+                b.bill_ref_no, b.payment_reference, b.invoice_date,
                 s.supplier_name,
                 u.email AS assignee_email, u.name AS assignee_name,
                 pdrole.code AS assignee_role
@@ -408,7 +408,7 @@ async function assignVoucher(req, res) {
               bill_ref_no:       row.bill_ref_no,
               payment_reference: row.payment_reference,
               amount:            row.amount,
-              assigned_at:       row.assigned_at,
+              invoice_date:      row.invoice_date,
               due_days:          row.due_days,
             },
             { name: row.assignee_name, email: row.assignee_email, role: row.assignee_role },
@@ -959,9 +959,10 @@ async function syncPaymentStatus(req, res) {
       totalOutstanding += Number(r.Outstanding ?? r.outstanding ?? 0);
     }
 
+    // Treat outstanding of ₹1 or less as a rounding artifact, not a real balance due.
     let newCode = spRows.length === 0 ? 'pending_verification' : 'unpaid';
-    if (spRows.length > 0 && totalPaid > 0 && totalOutstanding <= 0) newCode = 'paid';
-    else if (spRows.length > 0 && totalPaid > 0 && totalOutstanding > 0) newCode = 'partial';
+    if (spRows.length > 0 && totalPaid > 0 && totalOutstanding <= 1) newCode = 'paid';
+    else if (spRows.length > 0 && totalPaid > 0 && totalOutstanding > 1) newCode = 'partial';
 
     const newPayId = await psid(newCode);
     await pool.query('UPDATE vouchers SET payment_status_det_id=$1, updated_at=NOW() WHERE id=$2', [newPayId, id]);
