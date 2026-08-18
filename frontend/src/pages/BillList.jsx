@@ -51,6 +51,8 @@ export default function BillList() {
   const [filterStatus, setFilterStatus] = useState('open');
   const [filterPurchaseType, setFilterPurchaseType] = useState('');
   const [search, setSearch] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [exporting, setExporting] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
   const [page, setPage] = useState(1);
@@ -61,10 +63,11 @@ export default function BillList() {
   async function handleExport() {
     setExporting(true);
     try {
-      const r = await api.get('/bills/export', {
-        params: filterStatus ? { bill_status: filterStatus } : {},
-        responseType: 'blob',
-      });
+      const params = {};
+      if (filterStatus) params.bill_status = filterStatus;
+      if (dateFrom)     params.date_from   = dateFrom;
+      if (dateTo)       params.date_to     = dateTo;
+      const r = await api.get('/bills/export', { params, responseType: 'blob' });
       const url = URL.createObjectURL(r.data);
       const a = document.createElement('a');
       const today = new Date().toISOString().slice(0, 10);
@@ -83,7 +86,11 @@ export default function BillList() {
   async function fetchBills() {
     setLoading(true);
     try {
-      const q = filterStatus ? `?bill_status=${filterStatus}` : '';
+      const qp = new URLSearchParams();
+      if (filterStatus) qp.set('bill_status', filterStatus);
+      if (dateFrom)     qp.set('date_from', dateFrom);
+      if (dateTo)       qp.set('date_to', dateTo);
+      const q = qp.toString() ? `?${qp}` : '';
       const res = await fetch(`/api/bills${q}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -96,8 +103,8 @@ export default function BillList() {
     }
   }
 
-  useEffect(() => { fetchBills(); }, [filterStatus]);
-  useEffect(() => { setPage(1); }, [filterStatus, filterPurchaseType, search, sortConfig, pageSize]);
+  useEffect(() => { fetchBills(); }, [filterStatus, dateFrom, dateTo]);
+  useEffect(() => { setPage(1); }, [filterStatus, dateFrom, dateTo, filterPurchaseType, search, sortConfig, pageSize]);
 
   const rows = bills.map(b => {
     const vArr = Array.isArray(b.vouchers) ? b.vouchers : [];
@@ -163,7 +170,7 @@ export default function BillList() {
         </div>
 
         {/* Filters */}
-        <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap', width:'45%' }}>
+        <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
           <input
             placeholder="Search supplier / trade name / bill no / invoice ref…"
             value={search}
@@ -191,6 +198,30 @@ export default function BillList() {
             <option value="CONSUME">Consume</option>
             <option value="PROJECT">Project</option>
           </select>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <label style={{ fontSize: 12, color: '#6c757d', whiteSpace: 'nowrap' }}>From</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <label style={{ fontSize: 12, color: '#6c757d', whiteSpace: 'nowrap' }}>To</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }}
+            />
+          </div>
+          {(dateFrom || dateTo) && (
+            <button
+              onClick={() => { setDateFrom(''); setDateTo(''); }}
+              style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid #dee2e6', background: '#fff', fontSize: 12, cursor: 'pointer', color: '#6c757d' }}
+            >✕ Clear dates</button>
+          )}
         </div>
 
         {loading ? (

@@ -40,13 +40,14 @@ const BILL_SELECT = `
 
 async function listBills(req, res) {
   try {
-    const { bill_status } = req.query;
+    const { bill_status, date_from, date_to } = req.query;
     let q = BILL_SELECT;
     const params = [];
-    if (bill_status) {
-      q += ` WHERE b.bill_status = $1`;
-      params.push(bill_status);
-    }
+    const wheres = [];
+    if (bill_status) { wheres.push(`b.bill_status = $${params.length + 1}`); params.push(bill_status); }
+    if (date_from)   { wheres.push(`b.invoice_date >= $${params.length + 1}`); params.push(date_from); }
+    if (date_to)     { wheres.push(`b.invoice_date <= $${params.length + 1}`); params.push(date_to); }
+    if (wheres.length) q += ' WHERE ' + wheres.join(' AND ');
     q += ' ORDER BY b.created_at DESC';
     const result = await pool.query(q, params);
     res.json({ bills: result.rows });
@@ -58,13 +59,14 @@ async function listBills(req, res) {
 
 async function exportBills(req, res) {
   try {
-    const { bill_status } = req.query;
+    const { bill_status, date_from, date_to } = req.query;
     let q = BILL_SELECT;
     const params = [];
-    if (bill_status) {
-      q += ` WHERE b.bill_status = $1`;
-      params.push(bill_status);
-    }
+    const wheres = [];
+    if (bill_status) { wheres.push(`b.bill_status = $${params.length + 1}`); params.push(bill_status); }
+    if (date_from)   { wheres.push(`b.invoice_date >= $${params.length + 1}`); params.push(date_from); }
+    if (date_to)     { wheres.push(`b.invoice_date <= $${params.length + 1}`); params.push(date_to); }
+    if (wheres.length) q += ' WHERE ' + wheres.join(' AND ');
     q += ' ORDER BY b.created_at DESC';
     const result = await pool.query(q, params);
 
