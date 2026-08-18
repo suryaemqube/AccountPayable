@@ -48,6 +48,7 @@ router.delete('/suppliers/:id/documents/:did', auth, requireRole('admin', 'execu
 router.post('/vouchers/upload', auth, requireRole('admin', 'executive'), upload.single('invoice'), voucherCtrl.uploadAndScan);
 router.post('/vouchers', auth, requireRole('admin', 'executive'), voucherCtrl.createVoucher);
 router.get('/vouchers', auth, voucherCtrl.listVouchers);
+router.get('/vouchers/export-report', auth, requireRole('admin', 'executive', 'approver'), voucherCtrl.exportVouchersReport);
 router.get('/vouchers/:id', auth, voucherCtrl.getVoucher);
 router.put('/vouchers/:id', auth, requireRole('admin', 'executive', 'approver'), voucherCtrl.updateVoucher);
 router.delete('/vouchers/:id', auth, requireRole('admin'), voucherCtrl.deleteVoucher);

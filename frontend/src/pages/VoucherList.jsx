@@ -49,6 +49,7 @@ export default function VoucherList() {
   const [filterDateTo, setFilterDateTo]     = useState('');
   const [selected, setSelected]     = useState(new Set());
   const [exporting, setExporting]   = useState(false);
+  const [exportingReport, setExportingReport] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -103,6 +104,37 @@ export default function VoucherList() {
         toast.error(err.response?.data?.error || 'Export failed');
       }
     } finally { setExporting(false); }
+  }
+
+  async function handleExportReport() {
+    setExportingReport(true);
+    try {
+      const params = {};
+      if (filter && filter !== 'all') params.status = filter;
+      if (search)           params.search = search;
+      if (filterSupplier)   params.supplier_name = filterSupplier;
+      if (filterPayment)    params.payment_status = filterPayment;
+      if (filterPurchaseType) params.purchase_type = filterPurchaseType;
+      if (filterDateFrom)   params.date_from = filterDateFrom;
+      if (filterDateTo)     params.date_to   = filterDateTo;
+
+      const r = await api.get('/vouchers/export-report', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a   = document.createElement('a');
+      a.href    = url;
+      const today = new Date().toISOString().slice(0, 10);
+      a.download = `vouchers-export-${today}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Export downloaded successfully');
+    } catch (err) {
+      if (err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        try { toast.error(JSON.parse(text).error || 'Export failed'); } catch { toast.error('Export failed'); }
+      } else {
+        toast.error(err.response?.data?.error || 'Export failed');
+      }
+    } finally { setExportingReport(false); }
   }
 
   function toggleSelect(id) {
@@ -195,6 +227,27 @@ export default function VoucherList() {
             <div style={{ color: 'var(--text3)', fontSize: 13 }}>{vouchers.length} total</div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              className="btn"
+              onClick={handleExportReport}
+              disabled={exportingReport}
+              style={{
+                background: exportingReport ? '#6c757d' : '#198754',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                padding: '8px 16px',
+                fontWeight: 600,
+                cursor: exportingReport ? 'default' : 'pointer',
+                fontSize: 13,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+              title={`Export ${sorted.length} visible voucher(s) to Excel`}
+            >
+              {exportingReport ? '⏳ Exporting…' : `⬇ Export XL (${sorted.length})`}
+            </button>
             {selected.size > 0 && (
               <button className="btn btn-primary" onClick={handleExport} disabled={exporting}
                 style={{ background: '#1d4ed8' }}>
@@ -339,7 +392,7 @@ export default function VoucherList() {
                         <span className="mono">{fmt(v.amount || v.total_amount)}</span>
                       </td>
                       <td>{voucherCreditDays(v) != null ? `${voucherCreditDays(v)} days` : '—'}</td>
-                      <td><PaymentBadge status={v.payment_status} /></td>
+                      <td><PaymentBadge status={v.bill_purchase_type_code !== 'CONSUME' ? v.payment_status : '—'} /></td>
                       <td><StatusBadge status={v.status} /></td>
                       <td>{v.assigned_to_name || <span className="text-muted">Unassigned</span>}</td>
                       <td>{v.created_by_name || '-'}</td>

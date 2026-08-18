@@ -127,7 +127,7 @@ export default function EmailModal({ voucherId, onClose, onSent }) {
           <div>
             <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Send Payment Advice</h2>
             <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text3)' }}>
-              This will send the email and mark the voucher as <strong>Approved</strong>.
+              Sends the payment advice email to the supplier.
             </p>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: 'var(--text3)', lineHeight: 1 }}>×</button>
