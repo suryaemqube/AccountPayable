@@ -46,7 +46,9 @@ const VOUCHER_SELECT = `
     pt.parametervalues  AS bill_purchase_type_label,
     pt.code             AS bill_purchase_type_code,
     b.salespro_act_name AS bill_salespro_act_name,
-    COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount
+    COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount,
+    cb.bank_name        AS company_bank_name,
+    cb.account_number   AS company_bank_account
   FROM vouchers v
   LEFT JOIN users u1      ON v.created_by  = u1.id
   LEFT JOIN users u2      ON v.assigned_to = u2.id
@@ -55,6 +57,7 @@ const VOUCHER_SELECT = `
   LEFT JOIN bills b       ON b.id = v.bill_id
   LEFT JOIN suppliers bs  ON bs.id = b.supplier_id
   LEFT JOIN parameter_details pt ON pt.parameterdetid = b.purchase_type_det_id
+  LEFT JOIN company_bank_accounts cb ON cb.id = b.company_bank_id
 `;
 
 // ── Short helpers ──────────────────────────────────────────────────────────
@@ -1224,6 +1227,9 @@ async function exportVouchersReport(req, res) {
       'Assigned To': v.assigned_to_name || '',
       'Created By': v.created_by_name || '',
       'Payment Mode': v.payment_mode || '',
+      'Our Bank': v.company_bank_name || '',
+      'Our Account No.': v.company_bank_account || '',
+      'Payment Date': fmtDate(v.paid_at),
       'Narration': v.narration || '',
     }));
 
