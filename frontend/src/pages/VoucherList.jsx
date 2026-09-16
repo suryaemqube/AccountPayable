@@ -246,7 +246,7 @@ export default function VoucherList() {
               }}
               title={`Export ${sorted.length} visible voucher(s) to Excel`}
             >
-              {exportingReport ? '⏳ Exporting…' : `⬇ Export XL (${sorted.length})`}
+              {exportingReport ? '⏳ Exporting…' : `⬇ Export Voucher (${sorted.length})`}
             </button>
             {selected.size > 0 && (
               <button className="btn btn-primary" onClick={handleExport} disabled={exporting}
@@ -257,7 +257,7 @@ export default function VoucherList() {
             {isExportFilter && selected.size === 0 && (
               <button className="btn btn-primary" onClick={handleExport} disabled={exporting}
                 style={{ background: '#1d4ed8' }}>
-                {exporting ? 'Exporting…' : `⬇ Export All (${exportable.length})`}
+                {exporting ? 'Exporting…' : `⬇ Export Bank (${exportable.length})`}
               </button>
             )}
             {/* <button className="btn btn-primary" onClick={() => nav(`${basePath}/new`)}>

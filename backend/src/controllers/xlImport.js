@@ -141,24 +141,21 @@ function parseExcelBuffer(buffer) {
 }
 
 // ─────────────────────────────────────────────
-//  Supplier fuzzy match
+//  Supplier exact match ONLY
+//  (Strict mode: no fuzzy matching to prevent wrong supplier assignment)
+//  Loose matching caused issues like:
+//    - "K. K. ENTERPRISES" matched "GENX RELOCATORS AND ENTERPRISES..."
+//    - Any supplier with common words (Services, Enterprises, Trading, etc.)
+//      would match incorrectly
+//  Solution: Only exact match. Unmatched rows require manual selection.
 // ─────────────────────────────────────────────
 
 function findSupplier(partyName, suppliers) {
   if (!partyName) return null;
   const n = partyName.toLowerCase().trim();
 
-  let hit = suppliers.find(s => s.supplier_name.toLowerCase().trim() === n);
-  if (hit) return hit;
-
-  hit = suppliers.find(s => {
-    const sn = s.supplier_name.toLowerCase().trim();
-    return sn.includes(n) || n.includes(sn);
-  });
-  if (hit) return hit;
-
-  const words = n.split(/\s+/).filter(w => w.length > 2).slice(0, 3).join(' ');
-  hit = suppliers.find(s => s.supplier_name.toLowerCase().includes(words));
+  // Only exact match - no fuzzy matching
+  const hit = suppliers.find(s => s.supplier_name.toLowerCase().trim() === n);
   return hit || null;
 }
 

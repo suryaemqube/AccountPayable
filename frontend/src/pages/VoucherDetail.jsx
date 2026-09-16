@@ -814,6 +814,50 @@ export default function VoucherDetail() {
               </div>
             )}
 
+            {/* Payment Details — shown when voucher is paid */}
+            {voucher.status === VS.PAID && (
+              <div className="card" style={{ marginBottom: 16, borderColor: '#3b82f6' }}>
+                <div className="card-head" style={{ background: '#eff6ff' }}>
+                  <div className="card-title" style={{ color: '#1e40af' }}>💳 Payment Details</div>
+                </div>
+                <div className="card-body">
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, fontSize: 13 }}>
+                    {/* Payment Mode */}
+                    <div>
+                      <div style={{ color: 'var(--text3)', marginBottom: 4 }}>Payment Mode</div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>
+                        {voucher.payment_mode || '—'}
+                      </div>
+                    </div>
+
+                    {/* Our Bank */}
+                    <div>
+                      <div style={{ color: 'var(--text3)', marginBottom: 4 }}>Our Bank</div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>
+                        {voucher.company_bank_name || '—'}
+                      </div>
+                    </div>
+
+                    {/* Our Account No. */}
+                    <div>
+                      <div style={{ color: 'var(--text3)', marginBottom: 4 }}>Our Account No.</div>
+                      <div style={{ fontSize: 14, fontWeight: 500, fontFamily: 'monospace' }}>
+                        {voucher.company_bank_account ? `···${String(voucher.company_bank_account).slice(-4)}` : '—'}
+                      </div>
+                    </div>
+
+                    {/* Payment Date */}
+                    <div>
+                      <div style={{ color: 'var(--text3)', marginBottom: 4 }}>Payment Date</div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>
+                        {voucher.paid_at ? fmtDate(voucher.paid_at) : '—'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Rejected */}
             {voucher.status === VS.REJECTED && (
               <div className="card" style={{ marginBottom: 16, borderColor: '#f09595' }}>
