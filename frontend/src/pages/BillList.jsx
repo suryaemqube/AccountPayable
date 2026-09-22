@@ -23,6 +23,7 @@ const COLUMNS = [
   { key: 'supplier_name',        label: 'Supplier' },
   { key: 'invoice_date',         label: 'Bill Date' },
   { key: 'bill_ref_no',          label: 'Invoice Ref' },
+  { key: 'due_days',             label: 'Credit Days',  align: 'center' },
   { key: 'purchase_type_label',  label: 'Purchase Type' },
   { key: 'gross_total',     label: 'Gross Total',  align: 'right' },
   { key: 'tds_amount',      label: 'TDS',           align: 'right' },
@@ -263,6 +264,7 @@ export default function BillList() {
                       <td style={{ padding: '10px 12px' }}>{b.supplier_name || '—'}</td>
                       <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>{fmtDate(b.invoice_date)}</td>
                       <td style={{ padding: '10px 12px' }}>{b.bill_ref_no || '—'}</td>
+                      <td style={{ padding: '10px 12px', textAlign: 'center' }}>{b.due_days != null ? b.due_days : '—'}</td>
                       <td style={{ padding: '10px 12px' }}>{b.purchase_type_label || '—'}</td>
                       <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'monospace' }}>{fmt(b.grossTotal)}</td>
                       <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'monospace', color: '#dc3545' }}>{b.tds > 0 ? fmt(b.tds) : '—'}</td>
