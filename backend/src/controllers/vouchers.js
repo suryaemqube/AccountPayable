@@ -11,6 +11,7 @@ const VOUCHERS_DIR = path.join(__dirname, '../../vouchers');
 const { logActivity } = require('../utils/activityLog');
 const { notify } = require('../utils/notify');
 const VS = require('../constants/voucherStatus');
+const { refreshBillStatus } = require('./bills');
 
 // ── Common SELECT fragment ─────────────────────────────────────────────────
 const VOUCHER_SELECT = `
@@ -504,6 +505,7 @@ async function managerAction(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && v.bill_id) await refreshBillStatus(v.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -537,6 +539,7 @@ async function approverVerify(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && vrow.bill_id) await refreshBillStatus(vrow.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -570,6 +573,7 @@ async function adminFinalApproval(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && vrow.bill_id) await refreshBillStatus(vrow.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -623,6 +627,7 @@ async function reopenVoucher(req, res) {
     );
     await logActivity(id, req.user.id, 'status_changed', 'Voucher reopened and reset to draft',
       { from: VS.REJECTED, to: VS.DRAFT });
+    if (vResult.rows[0].bill_id) await refreshBillStatus(vResult.rows[0].bill_id);
     res.json({ message: 'Voucher reopened', status: VS.DRAFT });
   } catch (err) {
     console.error(err);

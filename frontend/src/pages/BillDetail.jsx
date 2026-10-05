@@ -336,7 +336,8 @@ export default function BillDetail() {
   const netPay   = gross - tds - creditNote;
 
   const vouchersArr = Array.isArray(bill?.vouchers) ? bill.vouchers : [];
-  const allocated   = vouchersArr.reduce((s, v) => s + (Number(v.amount) || 0), 0);
+  // Rejected vouchers release their amount back to the bill so it can be re-allocated.
+  const allocated   = vouchersArr.filter(v => v.status !== 'rejected').reduce((s, v) => s + (Number(v.amount) || 0), 0);
   const remaining   = netPay - allocated;
 
   const STATUS_COLORS = {

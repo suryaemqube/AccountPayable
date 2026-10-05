@@ -73,8 +73,8 @@ async function exportBills(req, res) {
     const XLSX = require('xlsx');
     const rows = result.rows.map(b => {
       const vouchersArr = Array.isArray(b.vouchers) ? b.vouchers : [];
-      const allocated   = vouchersArr.reduce((s, v) => s + (Number(v.amount) || 0), 0);
-      const taxable     = Number(b.taxable_amount) || 0;
+      const allocated   = vouchersArr.filter(v => v.status !== 'rejected').reduce((s, v) => s + (Number(v.amount) || 0), 0);
+      const taxable    = Number(b.taxable_amount) || 0;
       const cgst        = Number(b.cgst) || 0;
       const sgst        = Number(b.sgst) || 0;
       const igst        = Number(b.igst) || 0;
@@ -336,7 +336,7 @@ async function createVoucherFromBill(req, res) {
     }
 
     const vouchersArr = Array.isArray(bill.vouchers) ? bill.vouchers : [];
-    const alreadyAllocated = vouchersArr.reduce((s, v) => s + (Number(v.amount) || 0), 0);
+    const alreadyAllocated = vouchersArr.filter(v => v.status !== 'rejected').reduce((s, v) => s + (Number(v.amount) || 0), 0);
     const grossTotal  = Number(bill.total_amount) || 0;
     const tds         = Number(bill.tds_amount) || 0;
     const creditNote  = Number(bill.credit_note_amount) || 0;
@@ -407,9 +407,10 @@ async function refreshBillStatus(billId) {
   const r = await pool.query(
     `SELECT b.total_amount, b.tds_amount, b.credit_note_amount,
        COALESCE(SUM(v.amount) FILTER (WHERE v.utr_no IS NOT NULL AND v.utr_no <> ''), 0) AS paid_amount,
-       COALESCE(SUM(v.amount), 0) AS allocated_amount
+       COALESCE(SUM(v.amount) FILTER (WHERE COALESCE(pds.code, '') <> 'rejected'), 0) AS allocated_amount
      FROM bills b
      LEFT JOIN vouchers v ON v.bill_id = b.id
+     LEFT JOIN parameter_details pds ON pds.parameterdetid = v.status_det_id
      WHERE b.id = $1
      GROUP BY b.id, b.total_amount, b.tds_amount, b.credit_note_amount`,
     [billId]
