@@ -1,7 +1,6 @@
 import axios from 'axios';
 
-
-  const API_URL = (process.env.NODE_ENV || 'development') !== 'production' ? '/api': 'https://app.emqube.net:94/api';
+const API_URL = typeof __VITE_API_URL__ !== 'undefined' ? __VITE_API_URL__ : '/api';
 
 const api = axios.create({ baseURL: API_URL });
 
