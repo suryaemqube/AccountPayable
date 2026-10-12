@@ -336,7 +336,8 @@ export default function BillDetail() {
   const netPay   = gross - tds - creditNote;
 
   const vouchersArr = Array.isArray(bill?.vouchers) ? bill.vouchers : [];
-  const allocated   = vouchersArr.reduce((s, v) => s + (Number(v.amount) || 0), 0);
+  // Rejected vouchers release their amount back to the bill so it can be re-allocated.
+  const allocated   = vouchersArr.filter(v => v.status !== 'rejected').reduce((s, v) => s + (Number(v.amount) || 0), 0);
   const remaining   = netPay - allocated;
 
   const STATUS_COLORS = {
@@ -433,21 +434,6 @@ export default function BillDetail() {
                     style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }} />
                 </div>
                 <div style={{ marginBottom: 12 }}>
-                  <label style={{ display: 'block', fontSize: 12, color: '#555', marginBottom: 4 }}>
-                    {form.purchase_type_code === 'CONSUME' ? 'State' : 'SalesPro Invoice Ref No.'}
-                  </label>
-                  {form.purchase_type_code === 'CONSUME' ? (
-                    <select value={form.payment_reference} onChange={e => fld('payment_reference', e.target.value)}
-                      style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }}>
-                      <option value="">— Select state —</option>
-                      {states.map(s => <option key={s.parameterdetid} value={s.parametervalues}>{s.parametervalues}</option>)}
-                    </select>
-                  ) : (
-                    <input value={form.payment_reference} onChange={e => fld('payment_reference', e.target.value)}
-                      style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }} />
-                  )}
-                </div>
-                <div style={{ marginBottom: 12 }}>
                   <label style={{ display: 'block', fontSize: 12, color: '#555', marginBottom: 4 }}>Narration</label>
                   <textarea value={form.narration} onChange={e => fld('narration', e.target.value)} rows={2}
                     style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13, resize: 'vertical' }} />
@@ -468,6 +454,21 @@ export default function BillDetail() {
                       <option value="CONSUME">Consume</option>
                       <option value="PROJECT">Project</option>
                     </select>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', fontSize: 12, color: '#555', marginBottom: 4 }}>
+                      {form.purchase_type_code === 'CONSUME' ? 'State' : 'SalesPro Invoice Ref No.'}
+                    </label>
+                    {form.purchase_type_code === 'CONSUME' ? (
+                      <select value={form.payment_reference} onChange={e => fld('payment_reference', e.target.value)}
+                        style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }}>
+                        <option value="">— Select state —</option>
+                        {states.map(s => <option key={s.parameterdetid} value={s.parametervalues}>{s.parametervalues}</option>)}
+                      </select>
+                    ) : (
+                      <input value={form.payment_reference} onChange={e => fld('payment_reference', e.target.value)}
+                        style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #dee2e6', fontSize: 13 }} />
+                    )}
                   </div>
                   {form.purchase_type_code === 'PROJECT' && (
                     <div style={{ gridColumn: '1 / -1' }}>
@@ -501,16 +502,26 @@ export default function BillDetail() {
               <>
                 <Field label="Supplier" value={bill?.supplier_name} />
                 <Field label="Vendor Code" value={bill?.vendor_code} />
-                <Field label="Invoice Date" value={fmtDate(bill?.invoice_date)} />
-                <Field label="Invoice Ref No." value={bill?.bill_ref_no} />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <Field label="Invoice Date" value={fmtDate(bill?.invoice_date)} />
+                  <Field label="Invoice Ref No." value={bill?.bill_ref_no} />
+                </div>
+                {/* <Field label="Tally Vch No." value={bill?.tally_vch_no} /> */}
+                <Field label="Narration" value={bill?.narration} />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <Field label="Credit Days" value={bill?.due_days != null ? `${bill.due_days} days` : null} />
+                  <Field label="Due Date" value={(() => {
+                    if (!bill?.invoice_date || bill?.due_days == null) return null;
+                    const d = new Date(bill.invoice_date);
+                    d.setDate(d.getDate() + Number(bill.due_days));
+                    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+                  })()} />
+                </div>
+                <Field label="Purchase Type" value={bill?.purchase_type_label} />
                 <Field
                   label={bill?.purchase_type_code === 'CONSUME' ? 'State' : 'Cost Centre (SalesPro Invoice Ref No.)'}
                   value={bill?.payment_reference}
                 />
-                {/* <Field label="Tally Vch No." value={bill?.tally_vch_no} /> */}
-                <Field label="Narration" value={bill?.narration} />
-                <Field label="Credit Days" value={bill?.due_days != null ? `${bill.due_days} days` : null} />
-                <Field label="Purchase Type" value={bill?.purchase_type_label} />
                 {bill?.purchase_type_code === 'PROJECT' && (
                   <Field label="Account Name (Salespro)" value={bill?.salespro_act_name} />
                 )}

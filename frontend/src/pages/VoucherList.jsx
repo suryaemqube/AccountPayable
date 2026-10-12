@@ -7,6 +7,7 @@ import { VS } from '../constants/voucherStatus';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import Pagination from '../components/Pagination';
+import DateRangeFilter from '../components/DateRangeFilter';
 
 const inp = { border:'1px solid var(--border)', borderRadius:6, padding:'7px 10px', fontSize:13, background:'var(--bg)', color:'var(--text)', outline:'none', fontFamily:'inherit' };
 
@@ -38,6 +39,7 @@ function voucherSortValue(v, key) {
 export default function VoucherList() {
   const { user } = useAuth();
   const canDelete = ['admin', 'approver'].includes(user?.role);
+  const canCreateVoucher = ['admin', 'executive'].includes(user?.role);
   const [vouchers, setVouchers]     = useState([]);
   const [loading, setLoading]       = useState(true);
   const [filter, setFilter]         = useState('all');
@@ -227,27 +229,6 @@ export default function VoucherList() {
             <div style={{ color: 'var(--text3)', fontSize: 13 }}>{vouchers.length} total</div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              className="btn"
-              onClick={handleExportReport}
-              disabled={exportingReport}
-              style={{
-                background: exportingReport ? '#6c757d' : '#198754',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                padding: '8px 16px',
-                fontWeight: 600,
-                cursor: exportingReport ? 'default' : 'pointer',
-                fontSize: 13,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-              title={`Export ${sorted.length} visible voucher(s) to Excel`}
-            >
-              {exportingReport ? '⏳ Exporting…' : `⬇ Export XL (${sorted.length})`}
-            </button>
             {selected.size > 0 && (
               <button className="btn btn-primary" onClick={handleExport} disabled={exporting}
                 style={{ background: '#1d4ed8' }}>
@@ -257,7 +238,7 @@ export default function VoucherList() {
             {isExportFilter && selected.size === 0 && (
               <button className="btn btn-primary" onClick={handleExport} disabled={exporting}
                 style={{ background: '#1d4ed8' }}>
-                {exporting ? 'Exporting…' : `⬇ Export All (${exportable.length})`}
+                {exporting ? 'Exporting…' : `⬇ Export Bank (${exportable.length})`}
               </button>
             )}
             {/* <button className="btn btn-primary" onClick={() => nav(`${basePath}/new`)}>
@@ -294,10 +275,10 @@ export default function VoucherList() {
 
         {/* ── Search & filters ── */}
         <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
-          <input style={{ ...inp, flex:'1 1 200px', minWidth:180 }}
+          <input style={{ ...inp, flex:'0 0 280px' }}
             placeholder="Search voucher no., supplier, bill ref…"
             value={search} onChange={e => setSearch(e.target.value)} />
-          <select style={{ ...inp, flex:'1 1 160px' }}
+          <select style={{ ...inp, flex:'0 0 280px', maxWidth:280 }}
             value={filterSupplier} onChange={e => setFilterSupplier(e.target.value)}>
             <option value="">All Suppliers</option>
             {uniqueSuppliers.map(s => <option key={s} value={s}>{s}</option>)}
@@ -318,15 +299,39 @@ export default function VoucherList() {
             <option value="CONSUME">Consume</option>
             <option value="PROJECT">Project</option>
           </select>
-          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-            <span style={{ fontSize:12, color:'var(--text3)', whiteSpace:'nowrap' }}>Bill Date:</span>
-            <input type="date" style={{ ...inp }} value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} />
-            <span style={{ fontSize:12, color:'var(--text3)' }}>–</span>
-            <input type="date" style={{ ...inp }} value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} />
-          </div>
+          <DateRangeFilter
+            label="Bill Date:"
+            from={filterDateFrom}
+            to={filterDateTo}
+            onChange={(f, t) => { setFilterDateFrom(f); setFilterDateTo(t); }}
+            inputStyle={{ ...inp }}
+          />
           {hasFilters && (
             <button className="btn" onClick={clearFilters} style={{ whiteSpace:'nowrap' }}>✕ Clear</button>
           )}
+          <button
+            className="btn"
+            onClick={handleExportReport}
+            disabled={exportingReport}
+            style={{
+              marginLeft: 'auto',
+              background: exportingReport ? '#6c757d' : '#198754',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontWeight: 600,
+              cursor: exportingReport ? 'default' : 'pointer',
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              whiteSpace: 'nowrap',
+            }}
+            title={`Export ${sorted.length} visible voucher(s) to Excel`}
+          >
+            {exportingReport ? '⏳ Exporting…' : `⬇ Export Voucher (${sorted.length})`}
+          </button>
         </div>
 
         <div className="card">
@@ -401,6 +406,12 @@ export default function VoucherList() {
                           <button className="btn btn-sm" onClick={() => nav(`${basePath}/${v.id}`)}>
                             Edit
                           </button>
+                          {canCreateVoucher && v.status === VS.REJECTED && v.bill_id && v.bill_status === 'open' && (
+                            <button className="btn btn-sm" style={{ color: '#198754' }}
+                              onClick={() => nav(`${basePath.replace('/vouchers', '/bills')}/${v.bill_id}`)}>
+                              + Create Voucher
+                            </button>
+                          )}
                           {canDelete && (
                             <button className="btn btn-sm" style={{ color: 'var(--red)' }}
                               onClick={e => handleDelete(e, v.id)}>

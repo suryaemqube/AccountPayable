@@ -11,6 +11,7 @@ const VOUCHERS_DIR = path.join(__dirname, '../../vouchers');
 const { logActivity } = require('../utils/activityLog');
 const { notify } = require('../utils/notify');
 const VS = require('../constants/voucherStatus');
+const { refreshBillStatus } = require('./bills');
 
 // ── Common SELECT fragment ─────────────────────────────────────────────────
 const VOUCHER_SELECT = `
@@ -46,7 +47,9 @@ const VOUCHER_SELECT = `
     pt.parametervalues  AS bill_purchase_type_label,
     pt.code             AS bill_purchase_type_code,
     b.salespro_act_name AS bill_salespro_act_name,
-    COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount
+    COALESCE((SELECT SUM(v2.amount) FROM vouchers v2 WHERE v2.bill_id = b.id), 0) AS bill_allocated_amount,
+    cb.bank_name        AS company_bank_name,
+    cb.account_number   AS company_bank_account
   FROM vouchers v
   LEFT JOIN users u1      ON v.created_by  = u1.id
   LEFT JOIN users u2      ON v.assigned_to = u2.id
@@ -55,6 +58,7 @@ const VOUCHER_SELECT = `
   LEFT JOIN bills b       ON b.id = v.bill_id
   LEFT JOIN suppliers bs  ON bs.id = b.supplier_id
   LEFT JOIN parameter_details pt ON pt.parameterdetid = b.purchase_type_det_id
+  LEFT JOIN company_bank_accounts cb ON cb.id = b.company_bank_id
 `;
 
 // ── Short helpers ──────────────────────────────────────────────────────────
@@ -501,6 +505,7 @@ async function managerAction(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && v.bill_id) await refreshBillStatus(v.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -534,6 +539,7 @@ async function approverVerify(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && vrow.bill_id) await refreshBillStatus(vrow.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -567,6 +573,7 @@ async function adminFinalApproval(req, res) {
       await pool.query('INSERT INTO voucher_comments (voucher_id, user_id, comment) VALUES ($1,$2,$3)',
         [id, req.user.id, comment]);
     }
+    if (action === 'reject' && vrow.bill_id) await refreshBillStatus(vrow.bill_id);
     res.json({ message: `Voucher ${action}d`, status: newCode });
   } catch (err) {
     console.error(err);
@@ -620,6 +627,7 @@ async function reopenVoucher(req, res) {
     );
     await logActivity(id, req.user.id, 'status_changed', 'Voucher reopened and reset to draft',
       { from: VS.REJECTED, to: VS.DRAFT });
+    if (vResult.rows[0].bill_id) await refreshBillStatus(vResult.rows[0].bill_id);
     res.json({ message: 'Voucher reopened', status: VS.DRAFT });
   } catch (err) {
     console.error(err);
@@ -1224,6 +1232,9 @@ async function exportVouchersReport(req, res) {
       'Assigned To': v.assigned_to_name || '',
       'Created By': v.created_by_name || '',
       'Payment Mode': v.payment_mode || '',
+      'Our Bank': v.company_bank_name || '',
+      'Our Account No.': v.company_bank_account || '',
+      'Payment Date': fmtDate(v.paid_at),
       'Narration': v.narration || '',
     }));
 
